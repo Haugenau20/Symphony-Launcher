@@ -163,8 +163,7 @@ setup() {
   [ -z "$output" ]
 }
 
-# --- allowlist normalization/covering (ported from upstream OpenCode-Setup's
-# ./scripts/symphony — same three helpers, same test intent) ----------------
+# --- allowlist normalization/covering ---------------------------------------
 
 @test "symphony_norm_dest: strips scheme/userinfo/port/.git and lowercases" {
   run symphony_norm_dest "https://user@GitLab.Example.com:8443/MyGroup/MyProject.git"

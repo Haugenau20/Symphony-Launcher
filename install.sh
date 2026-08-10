@@ -138,10 +138,11 @@ main() {
   info "checking prerequisites ..."
   local prereq_rc=0
   run_prereq_checks || prereq_rc=1
-  # Honest expectation-setting, not a prerequisite failure: the -symphony
-  # image is published from a separate maintainer repo (OpenCode-Setup) and
-  # may not have a release cut yet. A pull failure on it later is an expected
-  # state to hit here, not a bug in this launcher — see docker/docker-compose.symphony.yml.
+  # Honest expectation-setting, not a prerequisite failure: publishing the
+  # -symphony image to your registry is a separate step from anything this
+  # script or repo does, and may not have happened yet. A pull failure on it
+  # later is an expected state to hit here, not a bug in this launcher — see
+  # docker/docker-compose.symphony.yml.
   warn "the *-symphony image may not be published in your registry yet —"
   warn "  a pull failure on it is an expected state, not a bug in this launcher."
 
@@ -168,7 +169,8 @@ main() {
   echo "  ./symphony check <name>"
   echo
   info "init scaffolds projects/<name>/ from projects/_example/; check validates it before"
-  info "the first 'up'. Read docs/SYMPHONY.md before pointing a project at a real GitLab project."
+  info "the first 'up'. Read README.md's 'The security model' before pointing a project at a"
+  info "real GitLab project."
 
   return "$prereq_rc"
 }

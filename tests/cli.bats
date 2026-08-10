@@ -89,8 +89,7 @@ setup() {
   run_launcher check my-svc
   # Fatal, not a warning, and fatal WITHOUT depending on docker being present:
   # one token doing both jobs leaves no containment to warn about. See the
-  # comment on this check in lib/symphony.sh, and docs/SYNC.md's record of the
-  # divergence from the reference implementation, which only warns.
+  # comment on this check in lib/symphony.sh.
   [ "$status" -eq 1 ]
   [[ "$output" == *"SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token"* ]]
   [[ "$output" == *"the two-token split IS the containment"* ]]

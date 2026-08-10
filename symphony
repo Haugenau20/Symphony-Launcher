@@ -9,9 +9,8 @@
 #   symphony projects
 #   symphony --help
 #
-# Verb-first, with a PROJECT NAME — never a host-repo path (see
-# docs/MULTI_PROJECT.md; every stack lives under projects/<name>/, one
-# checkout runs any number of them).
+# Verb-first, with a PROJECT NAME — never a host-repo path: every stack lives
+# under projects/<name>/, and one checkout runs any number of them.
 #
 # Structure: the helpers live in lib/*.sh (sourced below) so they can be
 # unit-tested in isolation; this file keeps only path defaults, library

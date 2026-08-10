@@ -10,8 +10,8 @@
 # lib/core.sh (info/warn/err/die, load_env, env_file_get) and lib/project.sh
 # (validate_project_name, project_*_dir/file, project_*_container_name).
 #
-# Design (see OpenCode-Setup's docs/SYMPHONY.md and docs/MULTI_PROJECT.md for
-# the full rationale — this is the CLI-side port, not a redesign):
+# Design (see the README's "Configuration: four layers" for the full
+# rationale):
 #
 #   projects/<name>/
 #   ├── .env             per-project, AGENT-visible   -> PROJECT_ENV_FILE
@@ -27,7 +27,7 @@
 #   ├── workspaces/      -> SYMPHONY_WORKSPACES_PATH (per-item agent
 #   │                       workspaces; used by both trackers)
 #   └── allowlist.d/     -> EXTRA_ALLOWLIST_PATH, opt-in: only exported when
-#                           the directory exists (docs/MULTI_PROJECT.md)
+#                           the directory exists
 #
 # THE INVARIANT THAT MATTERS MOST: SYMPHONY_GITLAB_TOKEN must never reach the
 # agent's container. Mechanically, projects/<name>/symphony.env (and the
@@ -46,9 +46,8 @@
 SYMPHONY_ENV="${SYMPHONY_ENV:-symphony.env}"
 
 # --- WORKFLOW.md front-matter parsing ------------------------------------------
-# Sed-only (no yaml parser dependency), matching the upstream
-# OpenCode-Setup scripts/symphony: the front matter is delimited by two `---`
-# lines.
+# Sed-only (no yaml parser dependency): the front matter is delimited by two
+# `---` lines.
 
 # symphony_tracker_kind WORKFLOW — echo `tracker.kind` (e.g. "file_queue" or
 # "gitlab"), or empty if the file/key is missing.
@@ -86,8 +85,8 @@ symphony_wf_body() {
 # GIT_REMOTE_ALLOWLIST (git plane, enforced by the image's git-guard) and
 # GITLAB_WRITE_PROJECTS (API plane, enforced by the MCP write gate) express
 # nearly the same intent in two formats, and nothing at runtime makes them
-# agree. Ported verbatim from the prior implementation / upstream
-# OpenCode-Setup scripts/symphony — see docs/SYMPHONY.md §5-6.
+# agree — different processes gating different protocols. See
+# docs/IMAGE_CONTRACT.md for the full contract.
 
 # symphony_norm_dest URL|PATH — reduce a destination to `host/path`, or a
 # bare project path when there is no host. Drops scheme, userinfo, port,
@@ -207,13 +206,12 @@ symphony_allowlist_agreement() {
 
 # --- egress derivation ----------------------------------------------------------
 # symphony_http_proxy WORKFLOW — echo the proxy URL symphony should use, or
-# empty. Not a user setting: derived from tracker.kind, exactly like
-# upstream OpenCode-Setup's derive_egress. Both of symphony's networks are
-# internal: true (docker/docker-compose.symphony.yml), so squid — reached at
-# the fixed compose service hostname `squid` — is the only possible way out
-# either way; on the file queue this stays empty and the container has no
-# route off-host at all. An explicit SYMPHONY_HTTP_PROXY in either symphony.env
-# still wins.
+# empty. Not a user setting: derived from tracker.kind. Both of symphony's
+# networks are internal: true (docker/docker-compose.symphony.yml), so squid
+# — reached at the fixed compose service hostname `squid` — is the only
+# possible way out either way; on the file queue this stays empty and the
+# container has no route off-host at all. An explicit SYMPHONY_HTTP_PROXY in
+# either symphony.env still wins.
 symphony_http_proxy() {
   local workflow="$1"
   if [ "$(symphony_tracker_kind "$workflow")" = "gitlab" ]; then
@@ -248,9 +246,10 @@ symphony_http_proxy() {
 #
 # The derivation sits AFTER the shared files so a shared default cannot
 # silently collapse two projects onto one queue (two orchestrators claiming
-# one item is exactly what the rename(2) argument in docs/SYMPHONY.md assumes
-# cannot happen), and BEFORE the project's own files so an explicit
-# per-project value still wins.
+# one item is exactly what the rename(2)-is-atomic-within-one-filesystem
+# claim assumes cannot happen — see the Project layout section of the
+# README), and BEFORE the project's own files so an explicit per-project
+# value still wins.
 #
 # Each `load_env` call below EXPORTS the file's keys into this process's real
 # environment (see lib/core.sh) — which is also what lets symphony_preflight,
@@ -319,9 +318,9 @@ symphony_derive_settings() {
   export PROJECT_ENV_FILE
   PROJECT_ENV_FILE="${__SYM_DIR}/${rel_penv}"
 
-  # Opt-in per-project egress surface (docs/MULTI_PROJECT.md): only set when
-  # the project actually ships its own allowlist.d/, or this would mount an
-  # empty directory over a shared allowlist that was working.
+  # Opt-in per-project egress surface: only set when the project actually
+  # ships its own allowlist.d/, or this would mount an empty directory over
+  # a shared allowlist that was working.
   if [ -d "${__SYM_DIR}/${rel_allowlist}" ]; then
     export EXTRA_ALLOWLIST_PATH="${__SYM_DIR}/${rel_allowlist}"
   fi
@@ -524,16 +523,15 @@ symphony_preflight() {
       fi
       local agent_token="${GITLAB_PAT:-}"
       if [ -n "$sym_token" ] && [ -n "$agent_token" ] && [ "$sym_token" = "$agent_token" ]; then
-        # FATAL here, where the reference implementation only warns. That is a
-        # deliberate divergence, recorded in docs/SYNC.md: this launcher exists
-        # only to run unattended stacks, and with one token doing both jobs
-        # there is no containment left to warn about. Either it is Reporter, in
-        # which case the agent cannot push and every run fails late and
+        # Fatal, not a warning: with one credential doing both jobs there is
+        # no containment left to warn about. Either it is Reporter, in which
+        # case the agent cannot push and every run fails late and
         # confusingly; or it is Developer, in which case the ORCHESTRATOR can
-        # push code and a prompt-injected agent holding the same credential can
-        # relabel its own issue — marking its own work reviewed, or queueing
-        # itself more. docs/SYMPHONY.md §3 is explicit that the split, not the
-        # `api` scope, is what constrains either side.
+        # push code and a prompt-injected agent holding the same credential
+        # can relabel its own issue — marking its own work reviewed, or
+        # queueing itself more. The role, not the `api` scope, is what
+        # constrains either side (see the README's "The token's scope is the
+        # boundary").
         #
         # Checked here rather than only in cmd_check's resolved-config
         # cross-check so the verdict does not depend on whether docker happens
@@ -616,7 +614,7 @@ symphony_preflight() {
     fi
   fi
 
-  # --- newer failure modes, each a documented case in docs/SYMPHONY.md ---
+  # --- newer failure modes, each documented in docs/TROUBLESHOOTING.md ---
 
   if [ -f "$workflow" ]; then
     # Without a completion_marker the run always uses every turn: symphony
@@ -636,7 +634,7 @@ symphony_preflight() {
 
     # A clone in this hook runs in the SYMPHONY container, which deliberately
     # holds no repository credential (only the Reporter token, or nothing at
-    # all on file_queue) — see docs/SYMPHONY.md §4.
+    # all on file_queue).
     local after_create
     after_create="$(symphony_wf_scalar "$workflow" after_create)"
     if [ -n "$after_create" ]; then
@@ -657,11 +655,10 @@ symphony_preflight() {
     fi
 
     if [ "$kind" = "gitlab" ]; then
-      # Two lines duplicate tracker.project_id on purpose (docs/SYMPHONY.md
+      # Two lines duplicate tracker.project_id on purpose (see the README's
       # "The agent clones its own workspace") — the clone URL has to come
       # from somewhere the agent can trust, and the prompt body is the only
-      # place that is safe. `check` is documented as the thing that
-      # cross-checks the duplication.
+      # place that is safe. This check is what cross-checks the duplication.
       local project_id
       project_id="$(symphony_wf_scalar "$workflow" project_id)"
       if [ -n "$project_id" ]; then
@@ -672,10 +669,11 @@ symphony_preflight() {
         fi
       fi
 
-      # `TypeError: fetch failed` at the top of docs/SYMPHONY.md's failure
-      # list is squid refusing the tracker host outright. Guarded (-d first)
-      # per the same find/glob-on-missing-directory hazard documented
-      # elsewhere in this file.
+      # `TypeError: fetch failed` — the most likely first failure on a fresh
+      # gitlab tracker (docs/TROUBLESHOOTING.md) — is often squid refusing
+      # the tracker host outright. Guarded (-d first) per the same
+      # find/glob-on-missing-directory hazard documented elsewhere in this
+      # file.
       local base_url host allow_dir found_host=0 f
       base_url="$(symphony_wf_scalar "$workflow" base_url)"
       host="$(symphony_norm_dest "$base_url")"
@@ -688,20 +686,20 @@ symphony_preflight() {
         done
         if [ "$found_host" -eq 0 ]; then
           warn "  tracker host '$host' is not mentioned by any *.conf under $allow_dir"
-          warn "    this is the 'TypeError: fetch failed' failure at the top of docs/SYMPHONY.md — add an entry for it"
+          warn "    this is the 'TypeError: fetch failed' failure — see docs/TROUBLESHOOTING.md"
         fi
       fi
 
-      # Measures a RUN, not a stall, at the pinned ref (docs/SYMPHONY.md
-      # "What stall_timeout_ms actually measures") — too short for anything
-      # that clones a repository.
+      # stall_timeout_ms currently measures a RUN, not a stall (see
+      # docs/TROUBLESHOOTING.md) — too short for anything that clones a
+      # repository.
       local stall
       stall="$(symphony_wf_scalar "$workflow" stall_timeout_ms)"
       case "$stall" in
         ''|*[!0-9]*) : ;;
         *)
           if [ "$stall" -lt 600000 ]; then
-            warn "  stall_timeout_ms is ${stall}ms (< 600000) — it measures run time, not stalls, at the pinned ref"
+            warn "  stall_timeout_ms is ${stall}ms (< 600000) — it measures run time, not stalls, currently"
             warn "    too short for anything that clones a repo; raise it before a real run"
           fi ;;
       esac
@@ -715,9 +713,9 @@ symphony_preflight() {
   esac
 
   # rename(2) is atomic only WITHIN one filesystem, which is the entire
-  # atomic-claim argument (docs/SYMPHONY.md "The queue is the interface").
-  # Only checked for directories that already exist — a fresh `init` has
-  # created nothing yet — and skipped cleanly without `stat`.
+  # atomic-claim argument (see the README's "Project layout"). Only checked
+  # for directories that already exist — a fresh `init` has created nothing
+  # yet — and skipped cleanly without `stat`.
   if { [ "$kind" = "file_queue" ] || [ -z "$kind" ]; } && command -v stat >/dev/null 2>&1; then
     local qd dev first_dev="" mismatch=0 d
     for d in todo in-progress review done failed cancelled; do

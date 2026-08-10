@@ -1,10 +1,11 @@
 # The unattended agent substrate: opencode + squid, and nothing else.
 #
 # PULL-ONLY. Every image here is fetched from the configured registry
-# (${IMAGE_REGISTRY}...:${IMAGE_TAG}); nothing in this repo builds one. The
-# maintainer repo (OpenCode-Setup) owns the sources and publishes all three
-# images via its scripts/release.sh. There is no `build:` block in this stack
-# and none may be added — see docs/SYNC.md.
+# (${IMAGE_REGISTRY}...:${IMAGE_TAG}); nothing in this repo builds one. There
+# is no `build:` block in this stack and none may be added — see
+# docs/IMAGE_CONTRACT.md. Adding one to work around a missing registry tag
+# would silently change what "this stack" means from a released, addressable
+# image to whatever happens to build locally right now.
 #
 # Brought up by ./symphony, never by raw compose: the four env layers and the
 # derived per-project paths are what make a stack this project's rather than
@@ -15,26 +16,25 @@
 #
 #   * a bind mount of a host repository. There is no ${REPO_PATH}:/workspace
 #     here and there must never be one. /workspace is opencode's PROJECT ROOT,
-#     which — unlike /workspaces — sits behind no `permission.external_directory`
-#     gate at all, so binding a developer's checkout there would hand an
-#     unattended agent read-write access to real working state in the one mode
+#     which sits behind no `permission.external_directory` gate at all —
+#     unlike everything under /workspaces — so binding a real checkout there
+#     would hand an unattended agent read-write access to it in the one mode
 #     where nobody is present to answer a prompt. Symphony agents clone each
 #     item fresh into /workspaces/<item> and never read /workspace, so the
 #     project root is satisfied by an empty named volume that holds nothing.
-#     OpenCode-Setup had to REMOVE such a bind (its symphony overlay replaces
-#     the base stack's mount by target); this launcher owns its own stack and
-#     simply never declares one.
 #
 #   * a port publisher. An unattended stack has no web UI worth publishing, so
 #     by default this binds no host port at all. `./symphony up --publish` adds
 #     docker-compose.publish.yml when you actually want to look at a live run.
 #
-#   * user-layer and system-package overlays. Those exist to let a human
-#     customise their own interactive session; there is no human here.
+#   * anything for customising a session by hand. Every difference between two
+#     deployments belongs in a project's own configuration, where `./symphony
+#     config <name>` can show it and the preflight can check it — not in a
+#     local overlay that only one machine has.
 #
-# A second unattended mode (the planned merge-request-watching reviewer) would
-# reuse this file unchanged and add its own service overlay beside
-# docker-compose.symphony.yml. Nothing in here mentions a queue.
+# A second unattended mode would reuse this file unchanged and add its own
+# service overlay beside docker-compose.symphony.yml. Nothing in here mentions
+# a queue.
 name: symphony-${PROJECT_SLUG:-default}
 
 services:

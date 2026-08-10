@@ -1,11 +1,8 @@
 # Troubleshooting
 
-Driven from the maintainer repo's
-[`docs/SYMPHONY.md`](https://github.com/Haugenau20/OpenCode-Setup/blob/claude/symphony-multi-project-scaling-7z5mug/docs/SYMPHONY.md)
-— its "What to expect when it breaks" and "Known limits" sections in
-particular — with the failures ordered by how likely you are to hit them.
+Failures ordered by how likely you are to hit them on a fresh deployment.
 None of the integrations here have run against real infrastructure yet (see
-the README's "What is NOT verified"), so expect the first real run to find
+the README's "What is not verified"), so expect the first real run to find
 something on this list.
 
 For every entry: what to look at, and whether `symphony check <name>` or
@@ -28,14 +25,13 @@ docker exec symphony-<name>-orchestrator \
 - **`curl` works, `node` fails** — the **proxy** problem. `curl` honours
   `HTTP_PROXY`/`HTTPS_PROXY`; Node's global `fetch` is undici, and undici
   **ignores** those variables — something has to build a `ProxyAgent` from
-  them explicitly. If the orchestrator is pinned to an older
-  `SYMPHONY_REF`, this is the exact bug: the fix landed in symphony-queue's
-  GitLab tracker, and an older pin predates it.
+  them explicitly. If the `-symphony` image you are running predates that
+  fix in its GitLab tracker code, this is the exact bug — pull a newer tag.
 - **Both fail with a TLS error** — the **CA** problem. `update-ca-certificates`
   populates the system trust store; Node ships its own bundle and does not
   read the system one, so it needs `NODE_EXTRA_CA_CERTS` pointed at your
-  corporate CA explicitly (baked into the `-symphony` image's Dockerfile,
-  upstream — not something this launcher configures).
+  corporate CA explicitly. That is baked into the `-symphony` image itself,
+  not something this launcher's compose files or env layers configure.
 - **Both fail to connect at all** — squid's **egress allowlist**. Add the
   GitLab host under `extra-allowlist.d/` (checkout-wide) or
   `projects/<name>/allowlist.d/` (this project only, and the one you want
@@ -69,14 +65,14 @@ causes:
 ## The run is killed after a few minutes
 
 `stall_timeout_ms` is too low for work that clones a repository. Look for a
-`stall_detected` line in `symphony logs <name>`. This setting is
-currently a **run timeout**, not an actual stall detector, at the pinned
-orchestrator ref — it stamps the moment a run starts and nothing updates
-that stamp while the agent works, so a run dies once it has simply been
-*alive* long enough, regardless of progress. 300000ms (5 minutes, the
-upstream default) is fine for a stage-0 hello-world item on the file queue
-and far too short for anything that clones a repository — raise it to at
-least 1800000 (30 minutes) before a real GitLab run.
+`stall_detected` line in `symphony logs <name>`. This setting is currently a
+**run timeout**, not an actual stall detector — it stamps the moment a run
+starts and nothing updates that stamp while the agent works, so a run dies
+once it has simply been *alive* long enough, regardless of progress.
+300000ms (5 minutes, the image's built-in default) is fine for a stage-0
+hello-world item on the file queue and far too short for anything that
+clones a repository — raise it to at least 1800000 (30 minutes) before a
+real GitLab run.
 
 `symphony check <name>` warns when a `gitlab`-tracker workflow sets
 `stall_timeout_ms` under 600000ms, by name, pointing at this exact
@@ -123,7 +119,7 @@ not that it finished." Look at the orchestrator's log for the
 - `stopReason: max_turns` means the run was **interrupted** mid-task, not
   finished. Also logged separately as `agent_run_hit_max_turns` at warn
   level.
-- On an older `SYMPHONY_REF` there is no `stopReason` field at all — the
+- On an older `-symphony` image there is no `stopReason` field at all — the
   tell instead is `turnsCompleted` landing **exactly** on `max_turns`,
   which is much more likely to be exhaustion than coincidence.
 
@@ -139,13 +135,13 @@ on nearly every run.
 
 ## The `-symphony` image doesn't exist in your registry yet
 
-Expected, not a bug in this launcher — the image's sources live only in the
-maintainer repo (OpenCode-Setup), and its `scripts/release.sh` is what
-publishes the tag. If that release hasn't been cut yet for your registry,
+Expected, not a bug in this launcher — this launcher is pull-only (see
+[`docs/IMAGE_CONTRACT.md`](IMAGE_CONTRACT.md)) and publishing the
+`-symphony` tag to your registry is a separate step from anything this
+repository does. If that has not happened yet for your registry,
 `symphony up <name>` fails at its single `docker compose pull opencode
 squid symphony` step with an ordinary "manifest unknown" or similar
 registry error naming the `-symphony` tag — `opencode` and `squid` are
 ordinary, long-published images and are not expected to be the ones
 missing. There is nothing to fix here except waiting for (or requesting)
-that release; do **not** add a `build:` block to work around it (see
-[`docs/SYNC.md`](SYNC.md)).
+that publish; do **not** add a `build:` block to work around it.
