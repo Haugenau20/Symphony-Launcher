@@ -87,9 +87,10 @@ opencode:
   # Read this as a RUN timeout, not a stall detector — that is what it currently
   # measures. Symphony stamps the moment a run starts and nothing updates that
   # stamp while the agent works, so a run is killed once it has simply been
-  # ALIVE this long, however much progress it is making. The upstream 300000
-  # (5 min) is fine for a hello-world item and far too short for "clone a repo
-  # and implement something": 30 minutes is the floor for real work.
+  # ALIVE this long, however much progress it is making. The built-in default
+  # of 300000 (5 min) is fine for a hello-world item and far too short for
+  # "clone a repo and implement something": 30 minutes is the floor for real
+  # work.
   stall_timeout_ms: 1800000
   session_timeout_ms: 3600000
 ---

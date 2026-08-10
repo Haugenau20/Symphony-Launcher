@@ -34,11 +34,11 @@ cmd_init() {
   symphony_ensure_dirs "$name"
 
   # projects/<name>/.env and symphony.env from the shipped per-project
-  # example (projects/_example/, the one directory under projects/ that
-  # stays tracked — see projects/README.md), if not already present. That
-  # example directory is owned by another agent and may not exist yet on a
-  # given checkout — print the copy command rather than failing when it's
-  # missing.
+  # example (projects/_example/, the one directory under projects/ that stays
+  # tracked — see projects/README.md), if not already present. A checkout
+  # missing that directory is degraded rather than broken, so print the copy
+  # command instead of failing: `init` is the verb people reach for when
+  # something is already wrong, and it should still say what to do next.
   local example
   if [ ! -f "$agent_env" ]; then
     example="projects/_example/.env.example"
@@ -82,7 +82,7 @@ cmd_init() {
   echo
   info "gitlab tracker only — put a Reporter-role project token in $sym_env:"
   info "  echo 'SYMPHONY_GITLAB_TOKEN=<token>' >> $sym_env"
-  info "  (never in .env or $agent_env — see docs/SYMPHONY.md §3)"
+  info "  (never in .env or $agent_env — see the README's 'The security model')"
   echo
   info "then:"
   info "  symphony check $name"
@@ -200,11 +200,9 @@ cmd_up() {
     COMPOSE+=(-f "$__SYM_DIR/docker/docker-compose.publish.yml")
   fi
 
-  # A missing `-symphony` tag in the registry is expected until a release
-  # has been cut — the symphony image's sources live only in the maintainer
-  # repo (OpenCode-Setup) and this repo is pull-only (see
-  # docker/docker-compose.symphony.yml's header). A pull failure here is not
-  # a bug in this launcher.
+  # A missing `-symphony` tag in the registry is expected until it has been
+  # published — this repo is pull-only (see docker/docker-compose.symphony.yml's
+  # header). A pull failure here is not a bug in this launcher.
   info "pulling images for symphony-${name} (opencode, squid, symphony) ..."
   info "  note: a missing '-symphony' tag in the registry is expected until a release is cut"
   "${COMPOSE[@]}" pull opencode squid symphony
@@ -319,10 +317,9 @@ cmd_down() {
 # cmd_add NAME BODY [--id ID] [--title TITLE] — queue a new file_queue item.
 # Refuses outright under tracker: gitlab, where a file in todo/ is read by
 # nothing: writing one and reporting success would leave the caller waiting
-# on work that was never queued. Same front matter, same id default, same
-# title slugification, same refusal on an existing file, and same
-# `^[A-Za-z0-9]` id check (the tracker's own id regex) as the prior
-# implementation this was ported from.
+# on work that was never queued. The `^[A-Za-z0-9]` id check matches the
+# tracker's own id regex, so a manually-set --id is guaranteed valid to the
+# component that will actually read it.
 cmd_add() {
   local name="${1:-}"
   [ -n "$name" ] || { usage; die "add requires a project name"; }

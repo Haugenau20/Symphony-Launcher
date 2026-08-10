@@ -9,10 +9,10 @@
 #
 # Every project this file talks about is identified by NAME, never by a repo
 # path — there is deliberately no host-repo argument anywhere in this CLI
-# (see docs/MULTI_PROJECT.md and the per-project layout in lib/symphony.sh).
-# NAME becomes a filesystem path component (projects/<name>/...) AND a
-# compose project name (symphony-<name>), so it is validated once, here,
-# before it is used as either.
+# (see the per-project layout in lib/symphony.sh). NAME becomes a filesystem
+# path component (projects/<name>/...) AND a compose project name
+# (symphony-<name>), so it is validated once, here, before it is used as
+# either.
 
 # PROJECTS_DIR is relative to the repo root (never `./`-prefixed, matching
 # the convention every *_dir helper below follows) — overridable so tests can
@@ -69,14 +69,11 @@ project_container_name()          { printf 'symphony-%s-orchestrator' "$1"; }
 project_publish_container_name()  { printf 'symphony-%s-publish' "$1"; }
 
 # --- port assignment -------------------------------------------------------
-# Ported from Opencode-Launcher's lib/project.sh, which this CLI's port logic
-# is deliberately unchanged from — see docs/MULTI_PROJECT.md's porting note.
-# Two adaptations for this repo's shape: recorded_port reads
-# projects/<name>/.env instead of .envs/<slug>.env, and the running-container
-# probe checks symphony-<name>-publish instead of opencode-publish-<slug>.
-#
 # Port publishing is opt-in (`up --publish`) — nothing here runs, and no host
-# port is bound, unless that flag is given.
+# port is bound, unless that flag is given. recorded_port reads the sticky
+# port out of projects/<name>/.env (see its own header below), and the
+# running-container probe checks symphony-<name>-publish, matching the
+# container name docker-compose.publish.yml actually gives that service.
 
 # port_in_use PORT — return 0 if something is already listening on PORT.
 port_in_use() {

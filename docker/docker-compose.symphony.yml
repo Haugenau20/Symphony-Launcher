@@ -1,13 +1,11 @@
 # Overlay: the queue orchestrator itself (symphony-queue, baked into the
 # -symphony image).
 #
-# Pull-only mirror of OpenCode-Setup's docker-compose.symphony.yml minus its
-# `build:` block — see docs/SYNC.md. The symphony image's sources
-# (symphony/Dockerfile, the vendored symphony-queue) live only in the
-# maintainer repo, and its scripts/release.sh publishes the tag. THE IMAGE MAY
-# NOT EXIST IN YOUR REGISTRY YET: the release that publishes it may not have
-# been cut. A pull failure here is an expected state, not a bug in the
-# launcher. Do not add a `build:` block to work around it.
+# Pull-only, same as docker-compose.yml: THE IMAGE MAY NOT EXIST IN YOUR
+# REGISTRY YET, since publishing the -symphony tag is a separate step from
+# anything this repository does. A pull failure here is an expected state,
+# not a bug in the launcher. Do not add a `build:` block to work around it —
+# see docs/IMAGE_CONTRACT.md.
 #
 # Separate from docker-compose.yml because the base file is the unattended
 # AGENT SUBSTRATE and this is one particular thing to drive it with. The
@@ -24,9 +22,10 @@
 #                  -f docker/docker-compose.yml \
 #                  -f docker/docker-compose.symphony.yml up -d
 #
-# Read OpenCode-Setup's docs/SYMPHONY.md before the first run — in particular
-# §1 and §3, the scoped token and the two-token split, which is the containment
-# that actually holds. Nothing in this file is a substitute for it.
+# Read the README's "The security model" before the first run — in
+# particular the scoped token and the two-token split, which is the
+# containment that actually holds. Nothing in this file is a substitute for
+# it.
 
 services:
   symphony:
@@ -77,10 +76,9 @@ services:
       # off-host at all.
       #
       # Node's global fetch is undici, and undici IGNORES these variables — it
-      # takes a ProxyAgent built from them. symphony-queue's GitLab tracker
-      # does that as of the fix noted in docs/SYMPHONY.md §4; an older
-      # SYMPHONY_REF fails its first API call with `TypeError: fetch failed`
-      # while the proxy sits unused.
+      # takes a ProxyAgent built from them instead. An older -symphony image
+      # predating that fix fails its first API call with `TypeError: fetch
+      # failed` while the proxy sits unused — see docs/TROUBLESHOOTING.md.
       HTTP_PROXY: ${SYMPHONY_HTTP_PROXY:-}
       HTTPS_PROXY: ${SYMPHONY_HTTP_PROXY:-}
       http_proxy: ${SYMPHONY_HTTP_PROXY:-}

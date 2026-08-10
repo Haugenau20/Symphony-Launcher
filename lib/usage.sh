@@ -27,8 +27,9 @@ Symphony is the opt-in unattended orchestrator: an agent runs headless
 against a queue of work items until each one is ready for a human. This CLI
 is verb-first with a PROJECT NAME, never a host-repo path — every stack lives
 under projects/<name>/, and one checkout runs any number of them. Read
-docs/SYMPHONY.md before the first real run, especially the GitLab-token
-scoping (§1–§3), and docs/MULTI_PROJECT.md for the env-layering contract.
+README.md's "The security model" before the first real run, especially the
+GitLab-token scoping, and "Configuration: four layers" for the env-layering
+contract.
 
 Verbs:
   init <name>
@@ -93,7 +94,7 @@ Verbs:
   help, --help
              Show this help.
 
-Layout (mirrors OpenCode-Setup exactly — see docs/MULTI_PROJECT.md):
+Layout:
   projects/<name>/
   ├── .env             per-project, AGENT-visible    -> PROJECT_ENV_FILE
   ├── symphony.env      per-project, LAUNCHER-ONLY — never named by any
