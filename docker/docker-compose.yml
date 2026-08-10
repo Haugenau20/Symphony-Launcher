@@ -1,0 +1,161 @@
+# The unattended agent substrate: opencode + squid, and nothing else.
+#
+# PULL-ONLY. Every image here is fetched from the configured registry
+# (${IMAGE_REGISTRY}...:${IMAGE_TAG}); nothing in this repo builds one. The
+# maintainer repo (OpenCode-Setup) owns the sources and publishes all three
+# images via its scripts/release.sh. There is no `build:` block in this stack
+# and none may be added — see docs/SYNC.md.
+#
+# Brought up by ./symphony, never by raw compose: the four env layers and the
+# derived per-project paths are what make a stack this project's rather than
+# some other project's, and only the launcher assembles them. `./symphony
+# config <name>` prints what they resolved to.
+#
+# What is deliberately ABSENT from this file, and must stay absent:
+#
+#   * a bind mount of a host repository. There is no ${REPO_PATH}:/workspace
+#     here and there must never be one. /workspace is opencode's PROJECT ROOT,
+#     which — unlike /workspaces — sits behind no `permission.external_directory`
+#     gate at all, so binding a developer's checkout there would hand an
+#     unattended agent read-write access to real working state in the one mode
+#     where nobody is present to answer a prompt. Symphony agents clone each
+#     item fresh into /workspaces/<item> and never read /workspace, so the
+#     project root is satisfied by an empty named volume that holds nothing.
+#     OpenCode-Setup had to REMOVE such a bind (its symphony overlay replaces
+#     the base stack's mount by target); this launcher owns its own stack and
+#     simply never declares one.
+#
+#   * a port publisher. An unattended stack has no web UI worth publishing, so
+#     by default this binds no host port at all. `./symphony up --publish` adds
+#     docker-compose.publish.yml when you actually want to look at a live run.
+#
+#   * user-layer and system-package overlays. Those exist to let a human
+#     customise their own interactive session; there is no human here.
+#
+# A second unattended mode (the planned merge-request-watching reviewer) would
+# reuse this file unchanged and add its own service overlay beside
+# docker-compose.symphony.yml. Nothing in here mentions a queue.
+name: symphony-${PROJECT_SLUG:-default}
+
+services:
+  opencode:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-opencode
+    # The service/hostname stays `opencode` even though the container is named
+    # for this launcher: the orchestrator dials http://opencode:<port> on an
+    # internal network, and WORKFLOW.md's opencode.server_url says the same.
+    # Renaming the container is safe; renaming the service is not.
+    hostname: opencode
+    depends_on:
+      - squid
+    env_file:
+      # Two layers, last wins — the order IS the mechanism, and this directive
+      # is the ONLY way per-project values reach a container. `--env-file`
+      # drives compose's ${VAR} interpolation and puts nothing inside one.
+      #
+      # .env holds what every project shares (LLM endpoint, image tag, git
+      # identity). PROJECT_ENV_FILE points at projects/<name>/.env, which holds
+      # what differs — above all the AGENT's scoped credentials.
+      #
+      # A per-project value may also BLANK an inherited one (`CONFLUENCE_PAT=`).
+      # Every MCP server in the image auto-enables on credential PRESENCE, so a
+      # blank keeps that server out of this stack entirely: absent, not
+      # disabled. A key merely left out is inherited instead, which is why
+      # projects/<name>/.env.example writes the blanks explicitly.
+      #
+      # Unset, PROJECT_ENV_FILE defaults to .env and the file is simply read
+      # twice, which changes nothing. `required: false` keeps a project that
+      # has not written one yet from being a hard error.
+      - .env
+      - path: ${PROJECT_ENV_FILE:-.env}
+        required: false
+    environment:
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,.local"
+      no_proxy: "localhost,127.0.0.1,::1,opencode,squid,.local"
+      # The in-container listen port, kept decoupled from any host port.
+      OPENCODE_INTERNAL_PORT: "${OPENCODE_INTERNAL_PORT:-4096}"
+      PROJECT_SLUG: ${PROJECT_SLUG:-default}
+      # Per-item workspaces sit OUTSIDE the /workspace project root, and
+      # opencode gates any tool touching an external path behind
+      # `permission.external_directory`, which defaults to "ask". Unattended
+      # means nobody is there to answer, so without this the very first file
+      # operation of every run blocks forever.
+      #
+      # Set here rather than in an env file on purpose: `environment:` outranks
+      # `env_file:`, so this cannot be widened by a stray value in a project's
+      # .env. Only this glob is allowed — every other path still hits the
+      # "ask" default.
+      OPENCODE_EXTRA_ALLOWED_DIRS: /workspaces/**
+      #
+      # ALLOW_REMOTE_GIT and GIT_REMOTE_ALLOWLIST are deliberately NOT repeated
+      # here. They arrive through the env_file layers above, which already
+      # resolve them last-wins across .env and the project's own file. Setting
+      # them a second time by interpolation would create a second path to the
+      # same value and therefore a way for the two to disagree.
+    volumes:
+      # Per-item agent workspaces, shared with the orchestrator so the path the
+      # prompt names is the path the agent sees. Lives in the BASE file, not
+      # the symphony overlay: any unattended mode needs somewhere disposable
+      # for the agent to work, and only the orchestrator service itself is
+      # queue-specific.
+      #
+      # :z relabels for SELinux (shared, not :Z) so an enforcing host does not
+      # deny the container access. Named volumes are auto-labelled.
+      - ${SYMPHONY_WORKSPACES_PATH:-./projects/default/workspaces}:/workspaces:z
+      # opencode's project root. An EMPTY named volume, on purpose — see the
+      # header. Disposable by construction: nothing anyone needs is written
+      # here, because the agent's work lives in /workspaces/<item>.
+      - sym_workspace:/workspace
+      - oc_state:/home/dev/.local/share/opencode
+      - oc_cfg:/home/dev/.config/opencode
+    networks:
+      - oc_internal
+      - oc_proxy
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    stdin_open: true
+    tty: true
+    stop_grace_period: 1s
+
+  squid:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-squid
+    hostname: squid
+    volumes:
+      # Short syntax so the SELinux flag is expressible. Per-project when the
+      # project ships its own allowlist.d/ (which a symphony deployment should:
+      # it needs the LLM endpoint and GitLab, and nothing else), otherwise the
+      # checkout-wide directory.
+      - ${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z
+    networks:
+      - oc_proxy
+      - oc_egress
+    stop_grace_period: 1s
+
+networks:
+  # oc_internal and oc_proxy are internal: true, so squid on oc_egress is the
+  # only route off-host for anything on them. That is what makes "no proxy
+  # variable" equal "no egress" for the orchestrator under the file queue.
+  oc_internal:
+    driver: bridge
+    internal: true
+  oc_proxy:
+    driver: bridge
+    internal: true
+  oc_egress:
+    driver: bridge
+
+volumes:
+  sym_workspace:
+    name: symphony-${PROJECT_SLUG:-default}_workspace
+  oc_state:
+    name: symphony-${PROJECT_SLUG:-default}_state
+  oc_cfg:
+    name: symphony-${PROJECT_SLUG:-default}_cfg
