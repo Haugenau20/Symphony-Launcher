@@ -1,0 +1,25 @@
+# Local secrets / identity — never commit.
+.env
+symphony.env
+
+# Per-project data: credentials, queue contents, workspaces, per-project
+# allowlists. Keep the layout documented (README.md) and the template
+# (_example/) tracked; everything else under projects/ is per-deployment.
+projects/*
+!projects/README.md
+!projects/_example/
+!projects/.gitkeep
+
+# Local allowlist drop-ins (the dir is tracked via its README; contents are not).
+extra-allowlist.d/*.conf
+
+# Vendored bats-core fetched by tests/run.sh.
+tests/.bats/
+
+# --- editor / OS noise --------------------------------------------------------
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

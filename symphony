@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# symphony — entry point for the unattended orchestrator CLI.
+#
+#   symphony init <name>
+#   symphony check|up|logs|status|stop|down <name>
+#   symphony add <name> "what the agent should do" [--id ID] [--title TITLE]
+#   symphony config <name>
+#   symphony projects
+#   symphony --help
+#
+# Verb-first, with a PROJECT NAME — never a host-repo path (see
+# docs/MULTI_PROJECT.md; every stack lives under projects/<name>/, one
+# checkout runs any number of them).
+#
+# Structure: the helpers live in lib/*.sh (sourced below) so they can be
+# unit-tested in isolation; this file keeps only path defaults, library
+# sourcing, and dispatch. main() runs only when the script is executed
+# directly (the source-guard at the bottom). Strict mode (set -euo pipefail)
+# is enabled inside main() so sourcing this file for tests has no side
+# effects beyond the library loads below.
+
+# Paths are overridable so tests can point them at a sandbox before sourcing.
+ENV_FILE="${ENV_FILE:-.env}"
+SYMPHONY_ENV="${SYMPHONY_ENV:-symphony.env}"
+
+# --- sourced libraries -------------------------------------------------------
+# Resolved relative to this script's OWN location so the modules load
+# whether `symphony` is executed directly or merely sourced by tests.
+# core.sh defines the low-level helpers (output + env-file) that the rest
+# depend on, so it loads first; project.sh's path/port helpers are used by
+# symphony.sh and commands.sh, so it loads next; the remaining modules are
+# pure function definitions and may load in any order after that (calls
+# resolve at run time, by which point every module is loaded and main() has
+# not yet run).
+__SYM_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+for __lib in core project symphony commands usage; do
+  # shellcheck source=/dev/null
+  source "$__SYM_DIR/lib/$__lib.sh"
+done
+unset __lib
+
+# --- main ---------------------------------------------------------------------
+main() {
+  set -euo pipefail
+  cd "$__SYM_DIR"
+
+  local verb="${1:-}"
+  if [ -n "$verb" ]; then shift; fi
+
+  case "$verb" in
+    ''|help|--help|-h)
+      usage
+      if [ -z "$verb" ]; then exit 1; fi
+      exit 0 ;;
+    version)
+      if [ -r "$__SYM_DIR/VERSION" ]; then
+        cat "$__SYM_DIR/VERSION"
+      else
+        echo "unknown"
+      fi ;;
+    init)     cmd_init "$@" ;;
+    check)    cmd_check "$@" ;;
+    up)       cmd_up "$@" ;;
+    logs)     cmd_logs "$@" ;;
+    status)   cmd_status "$@" ;;
+    stop)     cmd_stop "$@" ;;
+    down)     cmd_down "$@" ;;
+    add)      cmd_add "$@" ;;
+    config)   cmd_config "$@" ;;
+    projects) cmd_projects "$@" ;;
+    *)
+      usage
+      die "unknown verb '$verb' (expected init|check|up|logs|status|stop|down|add|config|projects|version|help)" ;;
+  esac
+}
+
+# Run main only when executed directly, not when sourced (e.g. by tests).
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
