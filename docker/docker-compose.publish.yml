@@ -1,0 +1,70 @@
+# Opt-in debug publisher. Added ONLY by `symphony up --publish`.
+#
+# docker-compose.yml's header says why the default binds no host port at
+# all: an unattended stack has no web UI worth publishing, because there is
+# nobody sitting in front of it to look at one. This overlay exists purely so
+# a human can attach to a live run that has gone wrong — it is a debugging
+# door, not a feature of the stack, which is why it is a separate file rather
+# than a flag on the base service.
+#
+# Same image and same ${IMAGE_TAG} as everything else pulled here, so the
+# publisher can never drift onto a tag the rest of the stack does not run.
+
+services:
+  opencode:
+    environment:
+      # The opencode-pty web viewer only matters once something outside the
+      # container can actually reach it, i.e. once this overlay is in play —
+      # that is why these two live here and not in the base file. Binding
+      # 0.0.0.0 inside the container is still safe: the container itself is
+      # only reachable via the loopback-bound ports: mapping below, on
+      # oc_proxy/oc_publish, both of which stay off the host network directly.
+      PTY_WEB_HOSTNAME: "0.0.0.0"
+      PTY_WEB_PORT: "1${OPENCODE_PORT:-4096}"
+
+  publish:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-squid:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-publish
+    hostname: symphony-publish
+    depends_on:
+      - opencode
+    # Two socat legs, because there are two separate things worth attaching
+    # to: the opencode server itself (the API/session surface symphony also
+    # dials), and — only once the opencode-pty plugin is enabled and started
+    # in the TUI with /pty-open-background-spy — its web viewer on the
+    # derived 1<port>. Without the second leg the viewer would be reachable
+    # only from inside the oc_proxy network, which a host port publisher
+    # cannot join it to directly.
+    #
+    # `trap 'kill 0' TERM INT` plus backgrounding both socats and `wait`
+    # ties their lifetime to this shell's: without it, `docker stop` /
+    # `compose down` would send TERM to the shell and leave the socat
+    # children running until the container's own kill timeout.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap 'kill 0' TERM INT
+        socat TCP-LISTEN:${OPENCODE_INTERNAL_PORT:-4096},fork,reuseaddr TCP:opencode:${OPENCODE_INTERNAL_PORT:-4096} &
+        socat TCP-LISTEN:1${OPENCODE_PORT:-4096},fork,reuseaddr TCP:opencode:1${OPENCODE_PORT:-4096} &
+        wait
+    ports:
+      # 127.0.0.1 only, on both legs: this is a debug attach point for
+      # whoever is at the keyboard of the machine running the stack, not a
+      # service to expose to the network. An unattended agent container that
+      # is misbehaving badly enough to need attaching to has no business also
+      # fielding connections from anywhere else.
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:${OPENCODE_INTERNAL_PORT:-4096}"
+      - "127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"
+    networks:
+      - oc_proxy
+      - oc_publish
+    restart: unless-stopped
+    stop_grace_period: 1s
+
+networks:
+  # NOT internal — this is deliberately the one network in the whole stack
+  # that reaches the host, and only the host: it carries no egress path
+  # outward, just the loopback-bound ports: mapping above back to whoever
+  # started the stack.
+  oc_publish:
+    driver: bridge

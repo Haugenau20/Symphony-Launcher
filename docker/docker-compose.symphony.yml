@@ -1,0 +1,125 @@
+# Overlay: the queue orchestrator itself (symphony-queue, baked into the
+# -symphony image).
+#
+# Pull-only mirror of OpenCode-Setup's docker-compose.symphony.yml minus its
+# `build:` block — see docs/SYNC.md. The symphony image's sources
+# (symphony/Dockerfile, the vendored symphony-queue) live only in the
+# maintainer repo, and its scripts/release.sh publishes the tag. THE IMAGE MAY
+# NOT EXIST IN YOUR REGISTRY YET: the release that publishes it may not have
+# been cut. A pull failure here is an expected state, not a bug in the
+# launcher. Do not add a `build:` block to work around it.
+#
+# Separate from docker-compose.yml because the base file is the unattended
+# AGENT SUBSTRATE and this is one particular thing to drive it with. The
+# planned merge-request-watching reviewer is a sibling of this file, not a
+# rewrite of the base.
+#
+# Brought up by ./symphony, which is what puts the orchestrator's env file in
+# front of compose:
+#
+#   docker compose --env-file .env --env-file symphony.env \
+#                  --env-file projects/<name>/.env \
+#                  --env-file projects/<name>/symphony.env \
+#                  -p symphony-<name> \
+#                  -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.symphony.yml up -d
+#
+# Read OpenCode-Setup's docs/SYMPHONY.md before the first run — in particular
+# §1 and §3, the scoped token and the two-token split, which is the containment
+# that actually holds. Nothing in this file is a substitute for it.
+
+services:
+  symphony:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-symphony:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-orchestrator
+    hostname: symphony
+    depends_on:
+      - opencode
+    environment:
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      SYMPHONY_QUEUE_ROOT: /queue
+      SYMPHONY_WORKSPACES_ROOT: /workspaces
+      SYMPHONY_WORKFLOW: /config/WORKFLOW.md
+      # Follows the opencode container's INTERNAL port, not any host port:
+      # this is a container-to-container URL on an internal network, so host
+      # publication is irrelevant to it. Keep opencode.server_url in
+      # WORKFLOW.md pointing at the same place — that is what the orchestrator
+      # actually dials; this one only drives the entrypoint's readiness wait.
+      # `./symphony check` compares the two.
+      SYMPHONY_OPENCODE_URL: http://opencode:${OPENCODE_INTERNAL_PORT:-4096}
+      SYMPHONY_LOG_LEVEL: ${SYMPHONY_LOG_LEVEL:-info}
+      #
+      # THE TWO-TOKEN SPLIT LIVES HERE. This is the ONLY place the
+      # orchestrator's token enters a container, and it arrives by
+      # interpolation from an env file that no `env_file:` directive anywhere
+      # in this stack names. The agent's container gets .env and
+      # projects/<name>/.env wholesale; this value is in neither, so the agent
+      # cannot read it.
+      #
+      # It MUST be a PROJECT access token with the REPORTER role. Reporter can
+      # read and write issues on one project and CANNOT push code; the agent's
+      # Developer token (GITLAB_PAT) pushes branches and opens merge requests
+      # and lives only in the agent's environment. Neither can do the other's
+      # job, so a compromised orchestrator can vandalise issue text and nothing
+      # else, and a prompt-injected agent cannot relabel its own work queue.
+      #
+      # Leave it blank for the file queue: the container then holds no
+      # credentials at all, which is the stronger posture.
+      SYMPHONY_GITLAB_TOKEN: ${SYMPHONY_GITLAB_TOKEN:-}
+      #
+      # Egress for the GitLab tracker only, and not a value you set by hand:
+      # lib/symphony.sh derives it from tracker.kind in WORKFLOW.md. It had
+      # exactly one possible value (squid is the only way out — both networks
+      # below are internal: true) and one other state, "you forgot it, run
+      # aborted", which is not a setting worth having. With
+      # tracker.kind: file_queue it stays empty and this container has no route
+      # off-host at all.
+      #
+      # Node's global fetch is undici, and undici IGNORES these variables — it
+      # takes a ProxyAgent built from them. symphony-queue's GitLab tracker
+      # does that as of the fix noted in docs/SYMPHONY.md §4; an older
+      # SYMPHONY_REF fails its first API call with `TypeError: fetch failed`
+      # while the proxy sits unused.
+      HTTP_PROXY: ${SYMPHONY_HTTP_PROXY:-}
+      HTTPS_PROXY: ${SYMPHONY_HTTP_PROXY:-}
+      http_proxy: ${SYMPHONY_HTTP_PROXY:-}
+      https_proxy: ${SYMPHONY_HTTP_PROXY:-}
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid"
+      no_proxy: "localhost,127.0.0.1,::1,opencode,squid"
+    volumes:
+      # The file queue. Bind-mounted from the host so `ls`, `mv` and your
+      # editor are the management UI — that is the whole reason there is no
+      # dashboard. All six state directories live under this one root because
+      # the claim is a rename(2) between them, which is atomic only within a
+      # single filesystem; `./symphony check` verifies they share one device.
+      #
+      # Under tracker.kind: gitlab this directory holds nothing (state is an
+      # issue label) and the launcher does not create it.
+      - ${SYMPHONY_QUEUE_PATH:-./projects/default/queue}:/queue:z
+      # Per-item agent workspaces, the same host directory the opencode
+      # service mounts. Symphony creates an EMPTY directory per item and hands
+      # the agent its path; the agent clones into it as its first step. Never
+      # point this at a working tree you care about.
+      - ${SYMPHONY_WORKSPACES_PATH:-./projects/default/workspaces}:/workspaces:z
+      # WORKFLOW.md — tracker choice, run limits, and the agent's prompt.
+      # Read-only because it is TRUSTED input: it drives the hooks, and the
+      # agent must never be able to rewrite the thing that prompts it. Queue
+      # items, issue descriptions and issue comments are the untrusted side of
+      # that line.
+      #
+      # config/ is a SUBDIRECTORY of projects/<name>/, one level below
+      # symphony.env, and that is load-bearing rather than tidy: only this
+      # directory is bind-mounted in here, so the project's own credential
+      # files cannot cross into a container that is supposed to hold the
+      # Reporter token and nothing else. The preflight refuses to start if an
+      # agent env file is readable from in here.
+      - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
+    networks:
+      # oc_internal reaches opencode. oc_proxy is only useful once
+      # SYMPHONY_HTTP_PROXY points at squid, which the launcher does for the
+      # gitlab tracker; on the file queue this container has no egress
+      # regardless, because both networks are internal: true.
+      - oc_internal
+      - oc_proxy
+    restart: unless-stopped
