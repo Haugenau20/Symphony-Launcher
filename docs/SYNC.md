@@ -147,6 +147,21 @@ consumes it. Keep the name and semantics in sync across both repos.
   `oc-publish` (the name both the maintainer repo and Opencode-Launcher
   use) — a presentation-only rename with nothing depending on the literal
   string, unlike `opencode`/`squid`/`symphony` above.
+- **One token used for both roles is FATAL here, not a warning.**
+  `docs/SYMPHONY.md` says the preflight "warns if they match", and
+  OpenCode-Setup's `scripts/symphony` does exactly that. This launcher
+  refuses. The reference is a general-purpose harness where an interactive
+  operator sees the warning and decides; this repo exists only to start
+  unattended stacks, and with one credential doing both jobs there is no
+  containment left to warn about — either it is Reporter and the agent cannot
+  push (every run fails late and confusingly), or it is Developer and the
+  orchestrator can push code while a prompt-injected agent holding the same
+  credential can relabel its own issue. The check lives in
+  `symphony_preflight` ([`lib/symphony.sh`](../lib/symphony.sh)) rather than in
+  `cmd_check`'s resolved-config cross-check, so the verdict does not depend on
+  whether `docker` happens to be installed. **If the reference ever promotes
+  this to fatal too, this delta disappears** — until then, do not "fix" the
+  divergence by downgrading it.
 - **No publisher by default.** `docker-compose.publish.yml` is an opt-in
   third file, added only by `up --publish`. An unattended stack has no web
   UI worth exposing to anyone by default.

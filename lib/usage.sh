@@ -60,7 +60,7 @@ Verbs:
              Preflight (abort before any docker call on failure), scaffold
              any missing directories, pull, then start opencode + squid +
              symphony — headless, no web UI, unless --publish is given, which
-             also starts oc-publish and binds a host port (opt-in; nothing
+             also starts the publish service and binds a host port (opt-in; nothing
              binds a host port otherwise).
   logs <name>
              Follow the orchestrator's log (--tail=100 -f). No-ops (not an
@@ -77,7 +77,7 @@ Verbs:
              In-flight items stay in in-progress/ and resume on restart.
   down <name>
              Tear down the whole stack (opencode + squid + symphony, plus
-             oc-publish if it was ever brought up).
+             the publish service if it was ever brought up).
   add <name> "<what the agent should do>" [--id ID] [--title TITLE]
              Queue a new file_queue item in todo/. Refuses under tracker:
              gitlab — there, work items are GitLab issues, not files; label

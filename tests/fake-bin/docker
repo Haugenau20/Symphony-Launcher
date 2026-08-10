@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# Fake `docker` for the test suite. Records the full argv of every call (one
+# line per invocation) to $FAKE_DOCKER_LOG and returns a controllable exit
+# code, so cli.bats can drive ./symphony down specific branches without a
+# real Docker daemon or registry.
+#
+# This repo needs far less of this than a general-purpose fake: no
+# manifest/exec/image-inspect machinery, because ./symphony never calls any
+# of that. Just enough to cover what lib/*.sh actually invokes:
+#
+#   compose ...     — logged and exits $FAKE_DOCKER_COMPOSE_RC, EXCEPT
+#                      `compose config`, which delegates to the REAL docker
+#                      so cmd_check's token cross-check (and compose.bats,
+#                      which calls real `docker compose config` directly
+#                      rather than through this stub) gets genuine resolved
+#                      YAML back instead of nothing.
+#   ps ...          — prints $FAKE_DOCKER_PS_OUTPUT (one container name per
+#                      line), driving publish_container_running / the
+#                      up/down/logs "is it running" checks.
+#   info            — exits $FAKE_DOCKER_INFO_RC (default 0).
+#   --version       — prints $FAKE_DOCKER_VERSION_OUTPUT.
+#
+# Knobs (all optional, read from the environment):
+#   FAKE_DOCKER_LOG               file to append argv to (default: /dev/null)
+#   FAKE_DOCKER_COMPOSE_RC        rc for `compose <pull|up|down|stop|logs>`
+#                                  (default 0) — never applied to `compose
+#                                  config`, which always reflects what the
+#                                  real docker compose actually resolved.
+#   FAKE_DOCKER_PS_OUTPUT         stdout for `ps --format {{.Names}}`
+#                                  (default ""), one container name per line.
+#   FAKE_DOCKER_INFO_RC           rc for `docker info` (default 0)
+#   FAKE_DOCKER_VERSION_OUTPUT    stdout for `docker --version`
+#                                  (default "Docker version 99.0.0-fake")
+
+: "${FAKE_DOCKER_LOG:=/dev/null}"
+printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+
+# Locate the REAL docker binary — i.e. the first `docker` on PATH that is not
+# this script itself — so `compose config` can delegate to it. Tests put
+# tests/fake-bin ahead of the real PATH, so a plain `docker` here would just
+# recurse into this same script.
+_real_docker() {
+  local self_dir here
+  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+  local IFS=:
+  for here in $PATH; do
+    [ -n "$here" ] || continue
+    [ "$here" = "$self_dir" ] && continue
+    if [ -x "$here/docker" ]; then
+      printf '%s' "$here/docker"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sub="${1:-}"
+case "$sub" in
+  compose)
+    # Find the compose SUBCOMMAND — pull/up/down/stop/logs/config — by
+    # skipping past ./symphony's global compose flags, each of which takes
+    # exactly one value (--project-directory, --env-file [repeatable], -p,
+    # -f [repeatable]). It is NOT simply "$2": lib/symphony.sh's
+    # symphony_derive_settings puts several of those ahead of it, so the
+    # subcommand is typically the LAST token, not the second. Scan a COPY of
+    # the args ("scan_args") so the original, unmodified "$@" is still there
+    # to hand to the real docker on delegation.
+    scan_args=("$@")
+    subcmd=""
+    set -- "${scan_args[@]:1}" # drop the leading "compose" for the scan
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --project-directory|--env-file|-p|-f) shift 2 ;;
+        -*) shift ;;
+        *) subcmd="$1"; break ;;
+      esac
+    done
+    if [ "$subcmd" = config ]; then
+      real="$(_real_docker)" || { echo "fake docker: no real docker found on PATH to delegate 'compose config' to" >&2; exit 127; }
+      exec "$real" "${scan_args[@]}"
+    fi
+    # pull / up -d / down / stop / logs / anything else.
+    exit "${FAKE_DOCKER_COMPOSE_RC:-0}"
+    ;;
+  ps)
+    printf '%s' "${FAKE_DOCKER_PS_OUTPUT:-}"
+    [ -n "${FAKE_DOCKER_PS_OUTPUT:-}" ] && printf '\n'
+    exit 0
+    ;;
+  info)
+    exit "${FAKE_DOCKER_INFO_RC:-0}"
+    ;;
+  --version)
+    printf '%s\n' "${FAKE_DOCKER_VERSION_OUTPUT:-Docker version 99.0.0-fake}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac

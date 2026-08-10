@@ -33,13 +33,15 @@ cmd_init() {
   # symphony_ensure_dirs.
   symphony_ensure_dirs "$name"
 
-  # projects/<name>/.env and symphony.env from the shipped examples, if not
-  # already present. The templates themselves (templates/*.example) are
-  # owned by another agent and may not exist yet — print the copy command
-  # rather than failing when one is missing.
+  # projects/<name>/.env and symphony.env from the shipped per-project
+  # example (projects/_example/, the one directory under projects/ that
+  # stays tracked — see projects/README.md), if not already present. That
+  # example directory is owned by another agent and may not exist yet on a
+  # given checkout — print the copy command rather than failing when it's
+  # missing.
   local example
   if [ ! -f "$agent_env" ]; then
-    example="templates/project.env.example"
+    example="projects/_example/.env.example"
     if [ -f "$example" ]; then
       cp "$example" "$agent_env"
       info "created $agent_env (from $example)"
@@ -52,7 +54,7 @@ cmd_init() {
   fi
 
   if [ ! -f "$sym_env" ]; then
-    example="templates/project.symphony.env.example"
+    example="projects/_example/symphony.env.example"
     if [ -f "$example" ]; then
       cp "$example" "$sym_env"
       info "created $sym_env (from $example)"
@@ -110,12 +112,23 @@ cmd_check() {
   local failed=0
   symphony_preflight "$name" || failed=1
 
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+
   if command -v docker >/dev/null 2>&1; then
     info "cross-checking 'docker compose config' for a leaked SYMPHONY_GITLAB_TOKEN ..."
     local token="${SYMPHONY_GITLAB_TOKEN:-}"
     if [ -n "$token" ]; then
       local resolved opencode_block
       resolved="$("${COMPOSE[@]}" config 2>/dev/null)" || resolved=""
+      # One token configured for BOTH roles would also match the search below,
+      # for a completely different reason and with a different fix. That case
+      # is fatal in symphony_preflight above, so it cannot reach here — and
+      # GITLAB_PAT's own value is excluded from the block anyway, so this
+      # check reports only the thing it names: a Reporter token that arrived
+      # in the agent's environment through the env layering.
+      resolved="$(printf '%s\n' "$resolved" | grep -vE '^[[:space:]]*GITLAB_PAT:[[:space:]]' || true)"
       # Isolate the `opencode:` service block among its siblings under
       # `services:` (2-space-indented keys), so a token that legitimately
       # appears in the SYMPHONY service's own block (that IS the mechanism
@@ -151,9 +164,9 @@ cmd_check() {
 # --- up --------------------------------------------------------------------------
 
 # cmd_up NAME [--publish] — preflight (abort before any docker call on
-# failure), create dirs, pull, then start opencode+squid+symphony (plus
-# oc-publish only with --publish, which is the only path that ever binds a
-# host port).
+# failure), create dirs, pull, then start opencode+squid+symphony (plus the
+# `publish` service only with --publish, which is the only path that ever
+# binds a host port).
 cmd_up() {
   local name="" publish=0
   while [ $# -gt 0 ]; do
@@ -197,8 +210,8 @@ cmd_up() {
   "${COMPOSE[@]}" pull opencode squid symphony
 
   if [ "$publish" -eq 1 ]; then
-    info "starting symphony-${name} (opencode + squid + symphony + oc-publish) ..."
-    "${COMPOSE[@]}" up -d opencode squid symphony oc-publish
+    info "starting symphony-${name} (opencode + squid + symphony + publish) ..."
+    "${COMPOSE[@]}" up -d opencode squid symphony publish
   else
     info "starting symphony-${name} (opencode + squid + symphony; no published port) ..."
     "${COMPOSE[@]}" up -d opencode squid symphony
@@ -276,7 +289,7 @@ cmd_stop() {
 # --- down ------------------------------------------------------------------------
 
 # cmd_down NAME — tear down the whole stack (opencode + squid + symphony,
-# plus oc-publish if it was ever brought up — `down` with no service list
+# plus the publish service if it was ever brought up — `down` with no service list
 # tears down everything compose knows about for this project, published or
 # not).
 cmd_down() {
@@ -400,8 +413,12 @@ cmd_config() {
 cmd_projects() {
   # -d first: `find`/a glob on a missing PROJECTS_DIR must never abort the
   # script under `set -o pipefail` — reachable on a totally fresh checkout
-  # that has never run `init`.
-  if [ ! -d "$PROJECTS_DIR" ] || [ -z "$(find "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
+  # that has never run `init`. _example/ is excluded from the emptiness
+  # check too — a checkout that has only ever had `_example` (the template
+  # `init` reads from, never a real project) is exactly the same "nothing
+  # deployed yet" situation as no projects/ subdirectories at all.
+  if [ ! -d "$PROJECTS_DIR" ] \
+     || [ -z "$(find "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d -not -name _example 2>/dev/null)" ]; then
     info "no projects yet — create one with:"
     info "  symphony init <name>"
     return 0
@@ -412,6 +429,10 @@ cmd_projects() {
   for d in "$PROJECTS_DIR"/*/; do
     [ -d "$d" ] || continue
     name="$(basename "$d")"
+    # _example/ ships as a template `init` reads from, not a real project —
+    # see projects/README.md. Never runs against it directly, so it has no
+    # business in a list of what's actually deployed.
+    if [ "$name" = "_example" ]; then continue; fi
     wf="${d}config/WORKFLOW.md"
     kind="-"
     if [ -f "$wf" ]; then

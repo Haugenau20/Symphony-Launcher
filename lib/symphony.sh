@@ -524,8 +524,24 @@ symphony_preflight() {
       fi
       local agent_token="${GITLAB_PAT:-}"
       if [ -n "$sym_token" ] && [ -n "$agent_token" ] && [ "$sym_token" = "$agent_token" ]; then
-        warn "  SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token"
-        warn "    the split only means anything if symphony's is Reporter and the agent's is Developer"
+        # FATAL here, where the reference implementation only warns. That is a
+        # deliberate divergence, recorded in docs/SYNC.md: this launcher exists
+        # only to run unattended stacks, and with one token doing both jobs
+        # there is no containment left to warn about. Either it is Reporter, in
+        # which case the agent cannot push and every run fails late and
+        # confusingly; or it is Developer, in which case the ORCHESTRATOR can
+        # push code and a prompt-injected agent holding the same credential can
+        # relabel its own issue — marking its own work reviewed, or queueing
+        # itself more. docs/SYMPHONY.md §3 is explicit that the split, not the
+        # `api` scope, is what constrains either side.
+        #
+        # Checked here rather than only in cmd_check's resolved-config
+        # cross-check so the verdict does not depend on whether docker happens
+        # to be installed.
+        err "  SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token"
+        err "    the two-token split IS the containment: mint a Reporter token for the"
+        err "    orchestrator ($sym_env) and a separate Developer token for the agent"
+        fatal=1
       fi
       # A Reporter token inherited from the shared root symphony.env reaches
       # ONE project — whichever it was minted for. A second project using it
