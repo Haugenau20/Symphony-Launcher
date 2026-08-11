@@ -233,7 +233,7 @@ report it — that is the invariant the whole deployment rests on.
 | `review_job_failed` with `did not write FINDINGS.json` | The agent never produced its output file. Almost always an edited prompt that dropped the `FINDINGS.json` instructions. |
 | `review_job_failed` with `findings rejected` | The agent wrote malformed JSON. Nothing is published — it fails rather than posting a partial review. It retries with backoff up to `max_attempts`. |
 | `review_superseded_*` | Someone pushed a new commit mid-review. The stale review is discarded; the new head is picked up on a later poll. Working as intended. |
-| Config validation error about `agent.permissions` | Your `REVIEW.md` tried to grant the agent `edit`/`bash`/`webfetch`/`external_directory`. That block documents the sandbox and cannot widen it. Set it to `deny` or delete the line. |
+| Config validation error about `agent.permissions` | A line in your `REVIEW.md` disagrees with what the controller actually enforces (`edit: allow`, everything else `deny`). That block documents the sandbox and cannot change it — including in the safe-looking direction: `edit: deny` describes a reviewer that could not write `FINDINGS.json`, and so could not produce a review at all. Correct the line or delete it. |
 | Nothing in `./symphony logs` | The controller container is not running. `./symphony status my-review`. |
 
 ---
