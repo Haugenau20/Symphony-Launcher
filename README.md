@@ -561,6 +561,7 @@ Stated plainly rather than reassuringly:
 
 ## More docs
 
+- [`docs/REVIEW_QUICKSTART.md`](docs/REVIEW_QUICKSTART.md) — setting up the merge-request reviewer, step by step, through to your first review comment
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — what breaks first, and how to tell the causes apart
 - [`docs/IMAGE_CONTRACT.md`](docs/IMAGE_CONTRACT.md) — the interface between this launcher and the images it runs
 - [`projects/README.md`](projects/README.md) — the per-project layout in detail
