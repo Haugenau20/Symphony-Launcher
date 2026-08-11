@@ -138,6 +138,88 @@ setup() {
   [[ "$output" != *"is not in GITLAB_WRITE_PROJECTS"* ]]
 }
 
+# --- check: review ----------------------------------------------------------
+
+# make_review_config NAME — write projects/<name>/config/REVIEW.md, without
+# review.env (each test below sets the token itself, same convention
+# make_project follows for WORKFLOW.md).
+make_review_config() {
+  local name="$1"
+  local dir="$SANDBOX/projects/$name/config"
+  mkdir -p "$dir" "$SANDBOX/projects/$name/workspaces"
+  cat > "$dir/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+  projects:
+    - mygroup/myproject
+agent:
+  max_turns: 5
+---
+body
+EOF
+}
+
+@test "check: a review-only project (no WORKFLOW.md) passes end to end" {
+  seed_env
+  make_review_config rev-only
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  run_launcher check rev-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"review-only deployment"* ]]
+  [[ "$output" == *"review: projects/rev-only/config/REVIEW.md"* ]]
+  [[ "$output" == *"PASS: SYMPHONY_REVIEW_GITLAB_TOKEN does not appear in either agent service's resolved config"* ]]
+  [[ "$output" == *"PASS: GITLAB_PAT does not appear in the opencode-review service's resolved config"* ]]
+  [[ "$output" == *"check passed."* ]]
+}
+
+@test "check: refuses a review-enabled project with no REVIEW.md, with a cp hint" {
+  seed_env
+  mkdir -p "$SANDBOX/projects/rev-only"
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  run_launcher check rev-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no projects/rev-only/config/REVIEW.md"* ]]
+  [[ "$output" == *"cp templates/REVIEW.md.example"* ]]
+  [[ "$output" == *"preflight failed"* ]]
+}
+
+@test "check: REFUSES when SYMPHONY_REVIEW_GITLAB_TOKEN and SYMPHONY_GITLAB_TOKEN are the same token" {
+  seed_env
+  make_project my-svc gitlab
+  make_review_config my-svc
+  printf 'SYMPHONY_GITLAB_TOKEN=shared-token-abc\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=shared-token-abc\n' > "$SANDBOX/projects/my-svc/review.env"
+  run_launcher check my-svc
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"SYMPHONY_REVIEW_GITLAB_TOKEN and SYMPHONY_GITLAB_TOKEN are the same token"* ]]
+}
+
+@test "check: REFUSES when SYMPHONY_REVIEW_GITLAB_TOKEN and GITLAB_PAT are the same token" {
+  seed_env
+  make_project my-svc gitlab
+  make_review_config my-svc
+  printf 'GITLAB_PAT=shared-token-def\n' > "$SANDBOX/projects/my-svc/.env"
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=shared-token-def\n' > "$SANDBOX/projects/my-svc/review.env"
+  run_launcher check my-svc
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"SYMPHONY_REVIEW_GITLAB_TOKEN and GITLAB_PAT are the same token"* ]]
+  [[ "$output" == *"the reviewer must never hold a token that can push"* ]]
+}
+
+@test "check: passes with three DISTINCT tokens (orchestrator, agent, review)" {
+  seed_env
+  make_project my-svc gitlab
+  make_review_config my-svc
+  printf 'SYMPHONY_GITLAB_TOKEN=token-orchestrator\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'GITLAB_PAT=token-agent\n' > "$SANDBOX/projects/my-svc/.env"
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=token-review\n' > "$SANDBOX/projects/my-svc/review.env"
+  run_launcher check my-svc
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"are the same token"* ]]
+  [[ "$output" == *"check passed."* ]]
+}
+
 # --- init -----------------------------------------------------------------
 
 @test "init: scaffolds projects/<name>/{config,queue/*,workspaces} and both env files, and is idempotent" {
@@ -191,6 +273,69 @@ setup() {
   grep -q 'compose .*up -d opencode squid symphony publish$' "$FAKE_DOCKER_LOG"
 }
 
+# --- up: review -------------------------------------------------------------
+
+@test "up: a review-only project starts opencode-review+squid+symphony-review, and NEITHER opencode NOR symphony" {
+  seed_env
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  run_launcher up rev-only
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*-p symphony-rev-only .*pull opencode-review squid symphony-review$' "$FAKE_DOCKER_LOG"
+  grep -q 'compose .*-p symphony-rev-only .*up -d opencode-review squid symphony-review$' "$FAKE_DOCKER_LOG"
+}
+
+@test "up --with-review: a project with BOTH WORKFLOW.md and REVIEW.md starts all five services" {
+  seed_env
+  make_project both file_queue
+  cat > "$SANDBOX/projects/both/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/both/review.env"
+  run_launcher up both --with-review
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*pull opencode opencode-review squid symphony symphony-review$' "$FAKE_DOCKER_LOG"
+  grep -q 'compose .*up -d opencode opencode-review squid symphony symphony-review$' "$FAKE_DOCKER_LOG"
+}
+
+@test "up: WORKFLOW.md present but REVIEW.md/token NOT requested with --with-review -> review stays off" {
+  seed_env
+  make_project both file_queue
+  cat > "$SANDBOX/projects/both/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/both/review.env"
+  run_launcher up both
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*-p symphony-both .*pull opencode squid symphony$' "$FAKE_DOCKER_LOG"
+  grep -q 'compose .*-p symphony-both .*up -d opencode squid symphony$' "$FAKE_DOCKER_LOG"
+}
+
+@test "up --with-review: refuses with an actionable hint when no SYMPHONY_REVIEW_GITLAB_TOKEN is configured" {
+  seed_env
+  make_project my-svc file_queue
+  run_launcher up my-svc --with-review
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--with-review requires SYMPHONY_REVIEW_GITLAB_TOKEN"* ]]
+  [[ "$output" == *"projects/my-svc/review.env"* ]]
+  [ ! -s "$FAKE_DOCKER_LOG" ]
+}
+
 # --- logs -------------------------------------------------------------------
 
 @test "logs: reports 'not running' (no compose call) when the container is down" {
@@ -208,6 +353,23 @@ setup() {
   FAKE_DOCKER_PS_OUTPUT="symphony-my-svc-orchestrator" run_launcher logs my-svc
   [ "$status" -eq 0 ]
   grep -q 'compose .*logs -f --tail=100 symphony' "$FAKE_DOCKER_LOG"
+}
+
+@test "logs: tails symphony-review when only the review controller's container is running (review-only project)" {
+  seed_env
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  FAKE_DOCKER_PS_OUTPUT="symphony-rev-only-review" run_launcher logs rev-only
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*logs -f --tail=100 symphony-review' "$FAKE_DOCKER_LOG"
+  ! grep -qE 'logs -f --tail=100 symphony$' "$FAKE_DOCKER_LOG"
 }
 
 # --- status -------------------------------------------------------------------
@@ -241,6 +403,34 @@ setup() {
   [[ "$output" == *"tracker: gitlab — mygroup/myproject"* ]]
 }
 
+@test "status: an ordinary implementation-only project never gets a symphony-review line" {
+  seed_env
+  make_project my-svc file_queue
+  run_launcher status my-svc
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"symphony-review"* ]]
+}
+
+@test "status: reports symphony-review's running state for a project that has review configured" {
+  seed_env
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  run_launcher status rev-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"symphony-review: NOT running"* ]]
+
+  FAKE_DOCKER_PS_OUTPUT="symphony-rev-only-review" run_launcher status rev-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"symphony-review: running"* ]]
+}
+
 # --- stop / down --------------------------------------------------------------
 
 @test "stop: stops only the symphony service" {
@@ -258,6 +448,31 @@ setup() {
   [ "$status" -eq 0 ]
   grep -q 'compose .*down' "$FAKE_DOCKER_LOG"
   [[ "$output" == *"is down."* ]]
+}
+
+@test "down: also puts docker-compose.review.yml on the compose invocation when review is configured" {
+  seed_env
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=review-reporter-token\n' > "$SANDBOX/projects/rev-only/review.env"
+  run_launcher down rev-only
+  [ "$status" -eq 0 ]
+  grep -q 'compose .*docker-compose.review.yml.*down' "$FAKE_DOCKER_LOG"
+  [[ "$output" == *"is down."* ]]
+}
+
+@test "down: an ordinary implementation-only project's compose invocation never mentions docker-compose.review.yml" {
+  seed_env
+  make_project my-svc file_queue
+  run_launcher down my-svc
+  [ "$status" -eq 0 ]
+  ! grep -q 'docker-compose.review.yml' "$FAKE_DOCKER_LOG"
 }
 
 # --- add ------------------------------------------------------------------

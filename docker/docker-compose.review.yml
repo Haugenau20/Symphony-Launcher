@@ -1,0 +1,197 @@
+# Overlay: the review controller and its own agent (opencode-review +
+# symphony-review, both baked into the same -symphony / base images this
+# launcher already pulls — see the README's Requirements section).
+#
+# Pull-only, same as docker-compose.symphony.yml: THE -symphony IMAGE MAY NOT
+# CARRY A REVIEW-CAPABLE TAG IN YOUR REGISTRY YET. A pull failure here is an
+# expected state, not a bug in the launcher. Do not add a `build:` block to
+# work around it — see docs/IMAGE_CONTRACT.md.
+#
+# A SIBLING of docker-compose.symphony.yml, not a rewrite of it, and not a
+# rewrite of docker-compose.yml either — see that file's own header ("A
+# second unattended mode would reuse this file unchanged and add its own
+# service overlay") and docker-compose.symphony.yml's ("The planned
+# merge-request-watching reviewer is a sibling of this file, not a rewrite of
+# the base"). Both promises are honoured here: the base stack is untouched,
+# and this file only ADDS two services, reusing the base's squid and internal
+# networks exactly as docker-compose.symphony.yml already does for symphony.
+#
+# WHY A SEPARATE opencode-review SERVICE, RATHER THAN REUSING opencode:
+# one opencode container cannot hold two credential sets. The base opencode
+# service's env_file: layer (.env + projects/<name>/.env) is where GITLAB_PAT
+# lives — the agent's own Developer, push-capable token. The reviewing agent
+# must never hold that, or anything that can reach GitLab at all: trusted
+# code in symphony-review fetches the diff and file blobs at the exact head
+# SHA and writes them into review-workspaces/; the agent inside
+# opencode-review only ever reads local files and returns structured
+# findings. So it gets its own container, its own env_file: layer (the
+# shared root .env ONLY — never ${PROJECT_ENV_FILE}), and no repository
+# credential at all.
+#
+# Brought up by ./symphony, which puts this overlay on the compose invocation
+# automatically whenever SYMPHONY_REVIEW_GITLAB_TOKEN is set (see
+# symphony_derive_settings in lib/symphony.sh) — never a flag you pass to
+# raw compose:
+#
+#   docker compose --env-file .env --env-file symphony.env \
+#                  --env-file projects/<name>/.env \
+#                  --env-file projects/<name>/symphony.env \
+#                  --env-file projects/<name>/review.env \
+#                  -p symphony-<name> \
+#                  -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.symphony.yml \
+#                  -f docker/docker-compose.review.yml up -d
+#
+# Read the README's "The security model" before the first run — in
+# particular "Three credentials" and the group-scoped review token's
+# reasoned exception. Nothing in this file is a substitute for it.
+
+services:
+  opencode-review:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-opencode-review
+    # The service/hostname stays `opencode-review`: symphony-review dials
+    # http://opencode-review:<port> on the internal network, the same way
+    # symphony dials http://opencode:<port> — see docs/IMAGE_CONTRACT.md's
+    # invariant on service names being load-bearing. Renaming the container
+    # is safe; renaming the service is not.
+    hostname: opencode-review
+    depends_on:
+      - squid
+    env_file:
+      # ONLY the shared root file — deliberately NOT
+      # `path: ${PROJECT_ENV_FILE}`. projects/<name>/.env is where GITLAB_PAT
+      # and every other per-project MCP credential live; this container must
+      # never see any of it. The shared root .env carries no project-scoped
+      # secret by its own rule (see .env.example's header), so handing it
+      # over wholesale is exactly as safe here as it is for the base opencode
+      # service.
+      - .env
+    environment:
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode-review,squid,.local"
+      no_proxy: "localhost,127.0.0.1,::1,opencode-review,squid,.local"
+      OPENCODE_INTERNAL_PORT: "${OPENCODE_INTERNAL_PORT:-4096}"
+      PROJECT_SLUG: ${PROJECT_SLUG:-default}
+      # Same pattern as the base opencode service's OPENCODE_EXTRA_ALLOWED_DIRS,
+      # pointed at the REVIEW workspaces instead: per-MR disposable review
+      # checkouts, outside the /workspace project root, which sits behind no
+      # permission.external_directory gate at all. Unattended means nobody is
+      # there to answer an "ask" prompt, so this is set directly in
+      # `environment:` (outranks env_file:) rather than left to a file that
+      # could widen it. Only this glob is allowed — every other path still
+      # hits the "ask" default, and there is no /workspaces mount here at
+      # all, so the implementation agent's own item workspaces are not even
+      # reachable from this container.
+      OPENCODE_EXTRA_ALLOWED_DIRS: /review-workspaces/**
+    volumes:
+      # Per-MR disposable review checkouts — material the trusted
+      # symphony-review controller writes, the agent only reads. Shared with
+      # symphony-review below so the path the agent is told about is the path
+      # it actually sees, exactly like /workspaces is shared between opencode
+      # and symphony in the base stack.
+      - ${SYMPHONY_REVIEW_WORKSPACES_PATH:-./projects/default/review-workspaces}:/review-workspaces:z
+      # opencode's project root. An EMPTY named volume, same reasoning as the
+      # base opencode service: nothing anyone needs is written here, because
+      # the review agent's material lives in /review-workspaces/<job>.
+      - sym_review_workspace:/workspace
+      - oc_review_state:/home/dev/.local/share/opencode
+      - oc_review_cfg:/home/dev/.config/opencode
+    networks:
+      - oc_internal
+      - oc_proxy
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    stdin_open: true
+    tty: true
+    stop_grace_period: 1s
+
+  symphony-review:
+    image: ${IMAGE_REGISTRY:-opencode-workplace}-symphony:${IMAGE_TAG:-local}
+    container_name: symphony-${PROJECT_SLUG:-default}-review-controller
+    hostname: symphony-review
+    depends_on:
+      - opencode-review
+    environment:
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      # Fixed, not a project setting: this service only ever runs the review
+      # controller. See templates/REVIEW.md.example and design report §13.
+      SYMPHONY_MODE: review
+      SYMPHONY_REVIEW_STORE_ROOT: /review-store
+      SYMPHONY_REVIEW_WORKSPACES_ROOT: /review-workspaces
+      SYMPHONY_REVIEW_WORKFLOW: /config/REVIEW.md
+      # Follows opencode-review's INTERNAL port, not any host port — same
+      # reasoning as SYMPHONY_OPENCODE_URL in docker-compose.symphony.yml.
+      SYMPHONY_OPENCODE_URL: http://opencode-review:${OPENCODE_INTERNAL_PORT:-4096}
+      SYMPHONY_LOG_LEVEL: ${SYMPHONY_LOG_LEVEL:-info}
+      #
+      # THE THIRD TOKEN, and the whole point of this file. Same mechanism,
+      # same reasoning, as SYMPHONY_GITLAB_TOKEN in docker-compose.symphony.yml:
+      # this is the ONLY place it enters a container, arriving by
+      # interpolation from projects/<name>/review.env, which no env_file:
+      # directive anywhere in this stack names. Neither opencode's nor
+      # opencode-review's env_file: layers name that file, so this value
+      # cannot reach either agent container by construction, not by
+      # convention. `symphony check` cross-checks the resolved config for
+      # exactly this.
+      #
+      # It MUST be a Reporter-role token — see README's "The security model".
+      # Unlike the orchestrator's per-project token, this one is typically
+      # GROUP-scoped, covering every project the review controller watches:
+      # see projects/_example/review.env.example for why that is a reasoned
+      # exception to "the narrowest credential that does the job" rather than
+      # a quietly bent rule. Reporter cannot push, merge or approve anywhere
+      # in the group, and the reviewing agent above never holds this value at
+      # all.
+      SYMPHONY_REVIEW_GITLAB_TOKEN: ${SYMPHONY_REVIEW_GITLAB_TOKEN:-}
+      #
+      # Egress for GitLab, unconditional for review: lib/symphony.sh's
+      # symphony_http_proxy grants it whenever SYMPHONY_REVIEW_GITLAB_TOKEN is
+      # set, regardless of tracker.kind or whether any tracker is configured
+      # at all — the review controller's whole job is talking to GitLab, on
+      # possibly many projects, independent of whatever this launcher's
+      # implementation pipeline (if any) is doing.
+      HTTP_PROXY: ${SYMPHONY_HTTP_PROXY:-}
+      HTTPS_PROXY: ${SYMPHONY_HTTP_PROXY:-}
+      http_proxy: ${SYMPHONY_HTTP_PROXY:-}
+      https_proxy: ${SYMPHONY_HTTP_PROXY:-}
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode-review,squid"
+      no_proxy: "localhost,127.0.0.1,::1,opencode-review,squid"
+    volumes:
+      # The review store: durable job state (discovered/claimed/running/
+      # publishing/published/superseded/skipped/failed), keyed
+      # project/mr-iid/head-sha. Bind-mounted from the host for the same
+      # reason the file queue is: `ls` stays legible, and the claim is a
+      # rename(2), atomic within one filesystem.
+      - ${SYMPHONY_REVIEW_STORE_PATH:-./projects/default/review-store}:/review-store:z
+      # Per-MR disposable review checkouts, the same host directory
+      # opencode-review mounts above.
+      - ${SYMPHONY_REVIEW_WORKSPACES_PATH:-./projects/default/review-workspaces}:/review-workspaces:z
+      # REVIEW.md — the review controller's own trusted config + prompt.
+      # Read-only, for the identical reason WORKFLOW.md is: it is mounted
+      # into the SAME /config as WORKFLOW.md (when both exist), so a project
+      # running both pipelines shares one read-only mount for both files.
+      - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
+    networks:
+      # oc_internal reaches opencode-review. oc_proxy is what makes
+      # SYMPHONY_HTTP_PROXY (squid) actually reachable — see the base file's
+      # header on why both are internal: true and squid is the only route
+      # off-host.
+      - oc_internal
+      - oc_proxy
+    restart: unless-stopped
+
+volumes:
+  sym_review_workspace:
+    name: symphony-${PROJECT_SLUG:-default}_review_workspace
+  oc_review_state:
+    name: symphony-${PROJECT_SLUG:-default}_review_state
+  oc_review_cfg:
+    name: symphony-${PROJECT_SLUG:-default}_review_cfg

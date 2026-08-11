@@ -273,6 +273,57 @@ setup() {
   [ "$output" = "http://custom:8080" ]
 }
 
+@test "symphony_http_proxy: review egress is granted even with NO tracker configured at all" {
+  # A review-only deployment may configure no tracker whatsoever (see
+  # templates/REVIEW.md.example) — SYMPHONY_REVIEW_GITLAB_TOKEN alone must be
+  # enough to grant squid, regardless of tracker.kind.
+  local wf="$BATS_TEST_TMPDIR/does-not-exist.md"
+  ( unset SYMPHONY_HTTP_PROXY
+    export SYMPHONY_REVIEW_GITLAB_TOKEN="review-token-xyz"
+    run symphony_http_proxy "$wf"
+    [ "$output" = "http://squid:3128" ] )
+}
+
+@test "symphony_http_proxy: review egress is granted on top of a file_queue tracker too" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  ( unset SYMPHONY_HTTP_PROXY
+    export SYMPHONY_REVIEW_GITLAB_TOKEN="review-token-xyz"
+    run symphony_http_proxy "$wf"
+    [ "$output" = "http://squid:3128" ] )
+}
+
+@test "symphony_http_proxy: no SYMPHONY_REVIEW_GITLAB_TOKEN and no gitlab tracker -> still empty" {
+  local wf="$BATS_TEST_TMPDIR/WORKFLOW.md"
+  printf -- '---\ntracker:\n  kind: file_queue\n---\nbody\n' > "$wf"
+  ( unset SYMPHONY_HTTP_PROXY SYMPHONY_REVIEW_GITLAB_TOKEN
+    run symphony_http_proxy "$wf"
+    [ -z "$output" ] )
+}
+
+# --- review path helpers -------------------------------------------------------
+
+@test "review path helpers: derive projects/<name>/{review.env,config/REVIEW.md} and the review container names" {
+  PROJECTS_DIR="projects"
+  run symphony_review_env_file myslug
+  [ "$output" = "projects/myslug/review.env" ]
+  run symphony_review_workflow_file myslug
+  [ "$output" = "projects/myslug/config/REVIEW.md" ]
+  run symphony_review_opencode_container_name myslug
+  [ "$output" = "symphony-myslug-opencode-review" ]
+  run symphony_review_container_name myslug
+  [ "$output" = "symphony-myslug-review" ]
+}
+
+@test "review path helpers: review.env sits OUTSIDE config_dir, same as symphony.env" {
+  run project_config_dir x
+  local config_dir="$output"
+  run symphony_review_env_file x
+  local review_env="$output"
+  [[ "$review_env" != "$config_dir"/* ]]
+  [[ "$review_env" != "$config_dir" ]]
+}
+
 # --- symphony_preflight -------------------------------------------------------
 
 @test "symphony_preflight: fatal on a missing WORKFLOW.md" {
@@ -280,6 +331,57 @@ setup() {
   run symphony_preflight myslug
   [ "$status" -eq 1 ]
   [[ "$output" == *"no ${PROJECTS_DIR}/myslug/config/WORKFLOW.md"* ]]
+}
+
+@test "symphony_preflight: review-only — a missing WORKFLOW.md is NOT fatal once SYMPHONY_REVIEW_GITLAB_TOKEN is set, but a missing REVIEW.md still is" {
+  PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+  ( export SYMPHONY_REVIEW_GITLAB_TOKEN="review-token-xyz"
+    run symphony_preflight myslug
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no ${PROJECTS_DIR}/myslug/config/WORKFLOW.md — review-only deployment"* ]]
+    [[ "$output" != *"cp templates/WORKFLOW.md.example"* ]]
+    [[ "$output" == *"no ${PROJECTS_DIR}/myslug/config/REVIEW.md"* ]]
+    [[ "$output" == *"cp templates/REVIEW.md.example"* ]] )
+}
+
+@test "symphony_preflight: passes the WORKFLOW.md/REVIEW.md checks once REVIEW.md exists for a review-only project" {
+  PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+  mkdir -p "$PROJECTS_DIR/myslug/config"
+  : > "$PROJECTS_DIR/myslug/config/REVIEW.md"
+  ( export SYMPHONY_REVIEW_GITLAB_TOKEN="review-token-xyz"
+    run symphony_preflight myslug
+    [[ "$output" == *"review: ${PROJECTS_DIR}/myslug/config/REVIEW.md"* ]]
+    [[ "$output" != *"no ${PROJECTS_DIR}/myslug/config/REVIEW.md"* ]] )
+}
+
+@test "symphony_preflight: FATAL when SYMPHONY_REVIEW_GITLAB_TOKEN equals SYMPHONY_GITLAB_TOKEN" {
+  PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+  ( export SYMPHONY_GITLAB_TOKEN="shared-token-1"
+    export SYMPHONY_REVIEW_GITLAB_TOKEN="shared-token-1"
+    run symphony_preflight myslug
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"SYMPHONY_REVIEW_GITLAB_TOKEN and SYMPHONY_GITLAB_TOKEN are the same token"* ]] )
+}
+
+@test "symphony_preflight: FATAL when SYMPHONY_REVIEW_GITLAB_TOKEN equals GITLAB_PAT" {
+  PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+  ( export GITLAB_PAT="shared-token-2"
+    export SYMPHONY_REVIEW_GITLAB_TOKEN="shared-token-2"
+    run symphony_preflight myslug
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"SYMPHONY_REVIEW_GITLAB_TOKEN and GITLAB_PAT are the same token"* ]]
+    [[ "$output" == *"the reviewer must never hold a token that can push"* ]] )
+}
+
+@test "symphony_preflight: three DISTINCT tokens produce no token-equality fatal" {
+  PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+  mkdir -p "$PROJECTS_DIR/myslug/config"
+  : > "$PROJECTS_DIR/myslug/config/REVIEW.md"
+  ( export SYMPHONY_GITLAB_TOKEN="token-orchestrator"
+    export GITLAB_PAT="token-agent"
+    export SYMPHONY_REVIEW_GITLAB_TOKEN="token-review"
+    run symphony_preflight myslug
+    [[ "$output" != *"are the same token"* ]] )
 }
 
 # --- viewer_port_for / port_pair_free (opencode-pty viewer-port coupling) ---

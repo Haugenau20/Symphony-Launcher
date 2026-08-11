@@ -38,6 +38,31 @@ nothing at runtime makes them agree with each other. `symphony check`
 cross-checks them, because a mismatch otherwise surfaces mid-run as an agent
 that pushed a branch it cannot open a merge request for.
 
+### The review controller (review mode)
+
+| Variable | Set by | Consumed by |
+|---|---|---|
+| `SYMPHONY_MODE` | fixed at `review` in `docker-compose.review.yml`'s `symphony-review` service | the -symphony image's own mode switch — this container only ever runs the review controller |
+| `SYMPHONY_REVIEW_STORE_ROOT` | fixed at `/review-store` in the same block | the review controller: durable job state, keyed `project/mr-iid/head-sha` |
+| `SYMPHONY_REVIEW_WORKSPACES_ROOT` | fixed at `/review-workspaces` | the review controller: where it writes the diff + file blobs for one job, and hands the path to the review agent's prompt |
+| `SYMPHONY_REVIEW_WORKFLOW` | fixed at `/config/REVIEW.md` | the review controller's config loader — tracker projects/group, polling, agent limits, and the review agent's prompt |
+| `SYMPHONY_OPENCODE_URL` (symphony-review's copy) | `http://opencode-review:${OPENCODE_INTERNAL_PORT:-4096}`, derived in `docker-compose.review.yml` | symphony-review's readiness wait, following the SAME internal-port rule as the implementation orchestrator's copy — see the invariant below |
+| `SYMPHONY_REVIEW_GITLAB_TOKEN` | `projects/<name>/review.env` (launcher-only, per-project — see `projects/_example/review.env.example`), reaching a container only through the `symphony-review` service's own `environment:` block | the review controller's GitLab client. Never reaches EITHER agent container — see the invariant below |
+| `OPENCODE_EXTRA_ALLOWED_DIRS` (opencode-review's copy) | fixed at `/review-workspaces/**` in `docker-compose.review.yml`'s `opencode-review` service `environment:` | the review agent's `permission.external_directory` gate, same reasoning as the implementation agent's copy, retargeted at review's own workspaces |
+| `SYMPHONY_REVIEW_STORE_PATH` / `SYMPHONY_REVIEW_WORKSPACES_PATH` | derived by `symphony_derive_settings` (`lib/symphony.sh`) from `projects/<name>/{review-store,review-workspaces}`, following the exact same absolute-path-by-string-concatenation rule as `SYMPHONY_QUEUE_PATH` / `SYMPHONY_WORKSPACES_PATH` | the host-side bind-mount sources for `symphony-review`'s (and, for the workspaces path, `opencode-review`'s) volumes |
+
+`opencode-review`'s `env_file:` layer is `.env` **alone** — deliberately not
+`${PROJECT_ENV_FILE}`. `projects/<name>/.env` is where `GITLAB_PAT` (and
+every other per-project MCP credential) lives; the reviewing agent must never
+see any of it, which is also why it has no `GIT_REMOTE_ALLOWLIST` /
+`ALLOW_GITLAB_WRITE` route to a GitLab write of any kind — it never receives
+a GitLab credential in the first place.
+
+The review overlay (`docker/docker-compose.review.yml`) is appended to the
+compose invocation only when `SYMPHONY_REVIEW_GITLAB_TOKEN` is set — an
+ordinary implementation-only project's resolved config never gains an
+`opencode-review` / `symphony-review` service at all.
+
 ## Invariants the compose stack must keep
 
 These are properties of `docker/docker-compose*.yml` that later edits must
@@ -56,15 +81,17 @@ drives the hooks and is the only safe place a clone URL can come from
 (README, "WORKFLOW.md"). A writable mount would let anything running inside
 the orchestrator's container rewrite the file that configures it.
 
-**The compose SERVICE names `opencode`, `squid`, and `symphony` are
-load-bearing and must never be renamed**, even though their *container*
-names are freely `symphony-<slug>-*`. The orchestrator dials the literal
-hostname `opencode` on an internal network, and `WORKFLOW.md`'s
-`opencode.server_url` has to say the same thing by hand — `symphony_preflight`
-in `lib/symphony.sh` is what catches a drift between the two. Renaming the
-service (as opposed to the container) breaks the orchestrator's ability to
-reach it at all. The `publish` service is the one exception: nothing dials
-it by name, so it may be renamed freely.
+**The compose SERVICE names `opencode`, `squid`, `symphony`,
+`opencode-review` and `symphony-review` are load-bearing and must never be
+renamed**, even though their *container* names are freely
+`symphony-<slug>-*`. The orchestrator dials the literal hostname `opencode`
+on an internal network, and `WORKFLOW.md`'s `opencode.server_url` has to say
+the same thing by hand — `symphony_preflight` in `lib/symphony.sh` is what
+catches a drift between the two. The review controller dials
+`opencode-review` the same way. Renaming a service (as opposed to its
+container) breaks the dialer's ability to reach it at all. The `publish`
+service is the one exception: nothing dials it by name, so it may be renamed
+freely.
 
 **`SYMPHONY_OPENCODE_URL` follows the INTERNAL port, never a host-published
 one.** It is a container-to-container URL on an internal network
@@ -82,6 +109,25 @@ file, so the agent's container cannot read it by construction, not by
 convention. `symphony check` cross-checks the resolved `docker compose
 config` for exactly this: the token's value must never appear in the
 `opencode` service's block.
+
+**`SYMPHONY_REVIEW_GITLAB_TOKEN` reaches a container only through the
+`symphony-review` service's own `environment:` block, never through an
+`env_file:` directive.** Identical mechanism, identical reason, to the
+invariant above — it is the third credential, and it must never reach
+EITHER agent container. `docker-compose.review.yml`'s `opencode-review`
+service gets `.env` alone via `env_file:` (deliberately not
+`projects/<name>/.env`); the token is in neither that file nor any file
+`opencode`'s `env_file:` layer names either. `symphony check` cross-checks
+the resolved config for exactly this: the review token's value must never
+appear in the `opencode` OR the `opencode-review` service's block.
+
+**`GITLAB_PAT` must never appear in the `opencode-review` service's resolved
+config.** This is the invariant that makes "the reviewer cannot push"
+mechanical rather than instructional: `opencode-review`'s `env_file:` layer
+is `.env` alone, so the agent's own Developer token — which lives in
+`projects/<name>/.env` — cannot reach it by construction. `symphony check`
+asserts this directly against the resolved `docker compose config`, the same
+way it asserts `SYMPHONY_GITLAB_TOKEN`'s absence from `opencode`.
 
 **Pull-only: no `build:` block anywhere, ever.** Every image is fetched from
 `${IMAGE_REGISTRY}...:${IMAGE_TAG}`. Adding a `build:` block to work around a

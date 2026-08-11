@@ -211,15 +211,51 @@ symphony_allowlist_agreement() {
 # — reached at the fixed compose service hostname `squid` — is the only
 # possible way out either way; on the file queue this stays empty and the
 # container has no route off-host at all. An explicit SYMPHONY_HTTP_PROXY in
-# either symphony.env still wins.
+# either symphony.env still wins. Also true whenever review is enabled
+# (SYMPHONY_REVIEW_GITLAB_TOKEN set — see symphony_derive_settings's "Layer
+# 5"): a review-only deployment may configure no tracker at all, yet the
+# review controller's whole job is talking to GitLab, so it needs squid
+# regardless of tracker.kind. Checked here (not gated behind a project name)
+# because by the time this runs, review.env has already been loaded into the
+# process environment — see symphony_derive_settings.
 symphony_http_proxy() {
   local workflow="$1"
-  if [ "$(symphony_tracker_kind "$workflow")" = "gitlab" ]; then
+  if [ "$(symphony_tracker_kind "$workflow")" = "gitlab" ] || [ -n "${SYMPHONY_REVIEW_GITLAB_TOKEN:-}" ]; then
     printf '%s' "${SYMPHONY_HTTP_PROXY:-http://squid:3128}"
   else
     printf '%s' "${SYMPHONY_HTTP_PROXY:-}"
   fi
 }
+
+# --- review path helpers ---------------------------------------------------------
+# The review controller's own per-project paths, following the exact
+# relative-path convention lib/project.sh's project_*_file/project_*_dir
+# helpers use (plain string concatenation against project_root_dir /
+# project_config_dir, no filesystem access). Defined HERE rather than in
+# lib/project.sh: review is additive to this slice, not a change to that
+# file's job of naming the four pre-existing layers.
+
+# symphony_review_env_file NAME — projects/<name>/review.env: the per-project,
+# LAUNCHER-ONLY file for SYMPHONY_REVIEW_GITLAB_TOKEN (see
+# projects/_example/review.env.example). Same containment as
+# project_symphony_env_file: never named by any env_file: directive anywhere
+# in this stack — see symphony_derive_settings's "Layer 5" below.
+symphony_review_env_file() { printf '%s/review.env' "$(project_root_dir "$1")"; }
+
+# symphony_review_workflow_file NAME — projects/<name>/config/REVIEW.md: the
+# review controller's own trusted config + prompt (see
+# templates/REVIEW.md.example), mounted read-only into /config alongside (or
+# instead of) WORKFLOW.md. One level below review.env, same reasoning as
+# project_workflow_file: the /config mount can never expose the file that
+# might hold the review token.
+symphony_review_workflow_file() { printf '%s/REVIEW.md' "$(project_config_dir "$1")"; }
+
+# symphony_review_opencode_container_name / symphony_review_container_name
+# NAME — container names matching docker/docker-compose.review.yml exactly,
+# the review-side counterparts of lib/project.sh's
+# project_opencode_container_name / project_container_name.
+symphony_review_opencode_container_name() { printf 'symphony-%s-opencode-review' "$1"; }
+symphony_review_container_name()          { printf 'symphony-%s-review' "$1"; }
 
 # --- per-invocation settings -----------------------------------------------------
 # symphony_derive_settings NAME — the four-layer env load plus the derived
@@ -232,8 +268,17 @@ symphony_http_proxy() {
 # and EXPORTS (real process environment, visible to every function called
 # afterward regardless of scope) PROJECT_SLUG, PROJECT_ENV_FILE,
 # SYMPHONY_CONFIG_PATH, SYMPHONY_QUEUE_PATH, SYMPHONY_WORKSPACES_PATH,
+# SYMPHONY_REVIEW_STORE_PATH, SYMPHONY_REVIEW_WORKSPACES_PATH,
 # SYMPHONY_HTTP_PROXY, and EXTRA_ALLOWLIST_PATH (only when the project ships
 # its own allowlist.d/).
+#
+# A fifth, review-only layer sits after the four described below:
+# projects/<name>/review.env — launcher-only, read the same way symphony.env
+# is (load_env into the process environment, --env-file only on the compose
+# invocation, never an env_file: directive) so SYMPHONY_REVIEW_GITLAB_TOKEN
+# reaches a container only through the symphony-review service's own
+# `environment:` block, exactly like SYMPHONY_GITLAB_TOKEN does for symphony.
+# See docker/docker-compose.review.yml and projects/_example/review.env.example.
 #
 # The four layers, read in this exact order, last value wins:
 #
@@ -286,6 +331,7 @@ symphony_derive_settings() {
   export PROJECT_SLUG
 
   local rel_config rel_queue rel_workspaces rel_workflow rel_allowlist rel_penv rel_psym
+  local rel_review_store rel_review_workspaces rel_prev
   rel_config="$(project_config_dir "$name")"
   rel_queue="$(project_queue_dir "$name")"
   rel_workspaces="$(project_workspaces_dir "$name")"
@@ -293,6 +339,13 @@ symphony_derive_settings() {
   rel_allowlist="$(project_allowlist_dir "$name")"
   rel_penv="$(project_env_file "$name")"
   rel_psym="$(project_symphony_env_file "$name")"
+  # Review's own pair, siblings of queue/ and workspaces/ under
+  # projects/<name>/, following the exact same "absolute, string-concatenated
+  # against __SYM_DIR, never cd-resolved" rule as the four paths above — see
+  # the ABSOLUTE-paths note at the end of this header.
+  rel_review_store="$(project_root_dir "$name")/review-store"
+  rel_review_workspaces="$(project_root_dir "$name")/review-workspaces"
+  rel_prev="$(symphony_review_env_file "$name")"
 
   SYM_CONFIG_DIR="$rel_config"
   SYM_QUEUE_DIR="$rel_queue"
@@ -304,9 +357,12 @@ symphony_derive_settings() {
   SYM_CONTAINER="$(project_container_name "$name")"
 
   export SYMPHONY_CONFIG_PATH SYMPHONY_QUEUE_PATH SYMPHONY_WORKSPACES_PATH
+  export SYMPHONY_REVIEW_STORE_PATH SYMPHONY_REVIEW_WORKSPACES_PATH
   SYMPHONY_CONFIG_PATH="${__SYM_DIR}/${rel_config}"
   SYMPHONY_QUEUE_PATH="${__SYM_DIR}/${rel_queue}"
   SYMPHONY_WORKSPACES_PATH="${__SYM_DIR}/${rel_workspaces}"
+  SYMPHONY_REVIEW_STORE_PATH="${__SYM_DIR}/${rel_review_store}"
+  SYMPHONY_REVIEW_WORKSPACES_PATH="${__SYM_DIR}/${rel_review_workspaces}"
 
   # Layer 3+4: per-project files, read AFTER the derivation above so an
   # explicit per-project value can still win over the just-derived default,
@@ -325,6 +381,12 @@ symphony_derive_settings() {
     export EXTRA_ALLOWLIST_PATH="${__SYM_DIR}/${rel_allowlist}"
   fi
 
+  # Layer 5: review.env, launcher-only, read AFTER symphony.env's per-project
+  # layer for the same last-wins reasoning, and BEFORE symphony_http_proxy so
+  # a review-enabled project's egress derivation can see the token that turns
+  # review on. See the function header and lib/symphony.sh's file header.
+  if [ -f "${__SYM_DIR}/${rel_prev}" ]; then load_env "${__SYM_DIR}/${rel_prev}"; fi
+
   export SYMPHONY_HTTP_PROXY
   SYMPHONY_HTTP_PROXY="$(symphony_http_proxy "$SYM_WORKFLOW")"
 
@@ -342,8 +404,21 @@ symphony_derive_settings() {
   if [ -f "${__SYM_DIR}/${rel_psym}" ]; then
     COMPOSE+=(--env-file "${rel_psym}")
   fi
+  if [ -f "${__SYM_DIR}/${rel_prev}" ]; then
+    COMPOSE+=(--env-file "${rel_prev}")
+  fi
   COMPOSE+=(-p "symphony-${name}")
   COMPOSE+=(-f "$__SYM_DIR/docker/docker-compose.yml" -f "$__SYM_DIR/docker/docker-compose.symphony.yml")
+  # The review overlay is additive and opt-in, gated on the SAME signal
+  # symphony_http_proxy and symphony_preflight use: SYMPHONY_REVIEW_GITLAB_TOKEN
+  # present (from review.env, just loaded above). An ordinary
+  # implementation-only project's resolved config never gains an
+  # opencode-review / symphony-review service at all — see
+  # docker/docker-compose.review.yml, a sibling of docker-compose.symphony.yml,
+  # not a rewrite of the base.
+  if [ -n "${SYMPHONY_REVIEW_GITLAB_TOKEN:-}" ]; then
+    COMPOSE+=(-f "$__SYM_DIR/docker/docker-compose.review.yml")
+  fi
 }
 
 # --- filesystem scaffolding -----------------------------------------------------
@@ -356,13 +431,19 @@ symphony_derive_settings() {
 # written. Under tracker: gitlab they would just be a second, empty,
 # meaningless board next to the real one (state lives in issue labels).
 symphony_ensure_dirs() {
-  local name="$1" workflow config_dir queue_dir workspaces_dir d
+  local name="$1" workflow config_dir queue_dir workspaces_dir review_store_dir review_workspaces_dir d
   workflow="$(project_workflow_file "$name")"
   config_dir="$(project_config_dir "$name")"
   queue_dir="$(project_queue_dir "$name")"
   workspaces_dir="$(project_workspaces_dir "$name")"
+  review_store_dir="$(project_root_dir "$name")/review-store"
+  review_workspaces_dir="$(project_root_dir "$name")/review-workspaces"
 
-  mkdir -p "$config_dir" "$workspaces_dir"
+  # review-store/ and review-workspaces/ are created unconditionally, exactly
+  # like config/ and workspaces/ above: cheap on a project that never enables
+  # review, and it means `up` never hands Docker a missing bind-mount source
+  # to auto-create as root.
+  mkdir -p "$config_dir" "$workspaces_dir" "$review_store_dir" "$review_workspaces_dir"
   if [ "$(symphony_tracker_kind "$workflow")" = "gitlab" ]; then
     return 0
   fi
@@ -425,6 +506,21 @@ symphony_queue_status() {
   else
     info "symphony: NOT running"
   fi
+
+  # Review status only for a project that actually has review configured
+  # (review.env or REVIEW.md present on disk) — a plain implementation-only
+  # project should never see a "symphony-review: NOT running" line it has no
+  # way to start. A pure file-existence check (no symphony_derive_settings
+  # call here — this function is read-only and cheap on purpose).
+  if [ -f "$(symphony_review_env_file "$name")" ] || [ -f "$(symphony_review_workflow_file "$name")" ]; then
+    local review_container
+    review_container="$(symphony_review_container_name "$name")"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$review_container"; then
+      info "symphony-review: running"
+    else
+      info "symphony-review: NOT running"
+    fi
+  fi
 }
 
 # --- preflight ---------------------------------------------------------------
@@ -456,11 +552,20 @@ symphony_preflight() {
   info "symphony preflight (project: ${name})"
 
   if [ ! -f "$workflow" ]; then
-    err "  no $workflow"
-    err "    cp templates/WORKFLOW.md.example $workflow          # file queue"
-    err "    cp templates/WORKFLOW.gitlab.md.example $workflow   # GitLab issues"
-    err "    (or: symphony init $name)"
-    fatal=1
+    if [ -n "${SYMPHONY_REVIEW_GITLAB_TOKEN:-}" ]; then
+      # Review-only deployment (see templates/REVIEW.md.example and the
+      # README's "The security model"): no implementation tracker configured
+      # at all, so no WORKFLOW.md is expected — SYMPHONY_REVIEW_GITLAB_TOKEN
+      # is what turns review mode on, checked below, independently of
+      # tracker.kind. Not fatal.
+      info "  no $workflow — review-only deployment, no implementation tracker configured"
+    else
+      err "  no $workflow"
+      err "    cp templates/WORKFLOW.md.example $workflow          # file queue"
+      err "    cp templates/WORKFLOW.gitlab.md.example $workflow   # GitLab issues"
+      err "    (or: symphony init $name)"
+      fatal=1
+    fi
   else
     kind="$(symphony_tracker_kind "$workflow")"
     info "  workflow: $workflow (tracker: ${kind:-unknown})"
@@ -564,6 +669,45 @@ symphony_preflight() {
       fi
       ;;
   esac
+
+  # --- the review token (the THIRD credential) ---------------------------------
+  # SYMPHONY_REVIEW_GITLAB_TOKEN is the review controller's own Reporter
+  # token — see README's "The security model" and
+  # projects/_example/review.env.example. Its PRESENCE is what turns review
+  # mode on for this project, deliberately independent of tracker.kind (a
+  # review-only deployment may configure no tracker at all — see the
+  # WORKFLOW.md check above). Same equality logic, same reasoning, and the
+  # same style as the SYMPHONY_GITLAB_TOKEN/GITLAB_PAT check above: with any
+  # two of the three tokens equal, one credential is doing two jobs and there
+  # is no containment left to warn about.
+  local review_token="${SYMPHONY_REVIEW_GITLAB_TOKEN:-}"
+  local review_workflow
+  review_workflow="$(symphony_review_workflow_file "$name")"
+  if [ -n "$review_token" ]; then
+    if [ -n "$sym_token" ] && [ "$review_token" = "$sym_token" ]; then
+      err "  SYMPHONY_REVIEW_GITLAB_TOKEN and SYMPHONY_GITLAB_TOKEN are the same token"
+      err "    revocability is the point: mint the review controller its own Reporter"
+      err "    token, separate from the implementation orchestrator's, in $(symphony_review_env_file "$name")"
+      fatal=1
+    fi
+    local agent_token_rv="${GITLAB_PAT:-}"
+    if [ -n "$agent_token_rv" ] && [ "$review_token" = "$agent_token_rv" ]; then
+      err "  SYMPHONY_REVIEW_GITLAB_TOKEN and GITLAB_PAT are the same token"
+      err "    the reviewer must never hold a token that can push — mint it its own"
+      err "    Reporter token, separate from the agent's Developer token (GITLAB_PAT)"
+      fatal=1
+    fi
+
+    if [ ! -f "$review_workflow" ]; then
+      err "  no $review_workflow"
+      err "    cp templates/REVIEW.md.example $review_workflow"
+      fatal=1
+    else
+      info "  review: $review_workflow"
+    fi
+  else
+    info "  no SYMPHONY_REVIEW_GITLAB_TOKEN set — review is off for this project"
+  fi
 
   # SYMPHONY_* keys belong in a launcher-only file. Both agent-visible files
   # get this check because docker-compose.yml hands them to the AGENT's

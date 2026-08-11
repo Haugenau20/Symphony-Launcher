@@ -10,8 +10,9 @@
 #
 # Completes the verb, then a project name for every verb that takes one
 # (read from projects/*/, excluding the _example template), then --publish
-# after `up`. The verb list is a maintained static copy — keep it in sync
-# with usage() in ../symphony whenever a verb is added/removed/renamed there.
+# and --with-review after `up`. The verb list is a maintained static copy —
+# keep it in sync with usage() in ../symphony whenever a verb is
+# added/removed/renamed there.
 
 # List project directories under ./projects, minus the _example template, one
 # per line. Plain POSIX-ish glob/loop (no zsh-only glob qualifiers) so this
@@ -57,7 +58,9 @@ _symphony() {
     init|check|up|logs|status|stop|down|add|config)
       if [[ "$words[CURRENT]" == -* ]]; then
         if [[ "$verb" == "up" ]]; then
-          _values '' '--publish[attach the debug publisher overlay (docker-compose.publish.yml)]'
+          _values '' \
+            '--publish[attach the debug publisher overlay (docker-compose.publish.yml)]' \
+            '--with-review[also start opencode-review + symphony-review (docker-compose.review.yml)]'
         fi
         return
       fi
