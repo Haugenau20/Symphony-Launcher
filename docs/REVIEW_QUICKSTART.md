@@ -224,6 +224,82 @@ report it — that is the invariant the whole deployment rests on.
 
 ---
 
+## Debugging a review that failed
+
+The confusing failure is `agent did not write FINDINGS.json`: the log shows the
+session created, the agent reporting completion, and then nothing. Work through
+these in order.
+
+**1. Is your REVIEW.md the current one?** This is the most common cause by far.
+An early version of the shipped template asked for findings as markdown in the
+reply rather than as a file, so an agent following it does exactly this —
+finishes confidently, writes nothing.
+
+```bash
+grep -c FINDINGS.json projects/<name>/config/REVIEW.md
+```
+
+`0` means your `REVIEW.md` predates the current template and never asks for the
+file. Re-copy it and re-apply your edits:
+
+```bash
+cp templates/REVIEW.md.example projects/<name>/config/REVIEW.md
+```
+
+**2. Read the `review_worker_findings_missing` log line.** It lists what the
+workspace actually held when the run ended:
+
+```json
+{"workspaceEntries":["MR.md (1841 bytes)","diff/ (3 entries)","files/ (3 entries)","review-notes.md (412 bytes)"],
+ "msg":"review_worker_findings_missing"}
+```
+
+That tells you which failure you have:
+
+| What you see | What it means |
+|---|---|
+| `MR.md`, `diff/`, `files/` and nothing else | The agent read its material and wrote nothing. A prompt problem — see step 1. |
+| An extra file like `review-notes.md` or `findings.md` | The agent wrote its findings somewhere else. The prompt is not being followed; make step 4 of it more prominent. |
+| `diff/ (0 entries)` | The agent had nothing to review. Check `exclude_paths` is not matching everything. |
+| Only `MR.md` | Material fetching failed earlier — look for a warning above this line. |
+
+**3. Keep the sandbox and look inside it.** The workspace is normally deleted as
+soon as the job ends. To preserve failed ones:
+
+```bash
+# in projects/<name>/config/REVIEW.md
+review:
+  keep_failed_workspaces: true
+```
+
+or, without editing config, for one restart:
+
+```bash
+SYMPHONY_REVIEW_KEEP_FAILED_WORKSPACES=1 ./symphony up <name>
+```
+
+Then, after a failure:
+
+```bash
+ls -la projects/<name>/review-workspaces/*/
+cat projects/<name>/review-workspaces/*/MR.md
+```
+
+You are looking at exactly what the agent saw. Turn it back off afterwards —
+they accumulate, and they contain the merge request's content.
+
+**4. Watch the agent work.** `./symphony logs <name>` follows the review
+controller. For the agent's own side of the conversation, look at the
+`opencode-review` container instead:
+
+```bash
+docker ps --format '{{.Names}}' | grep opencode-review     # find the exact name
+docker logs -f symphony-<project-slug>-opencode-review
+```
+
+That is where a permission denial or a tool error would appear — the controller
+only sees that the run ended.
+
 ## Troubleshooting
 
 | What you see | What it means |
