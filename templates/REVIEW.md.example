@@ -56,6 +56,12 @@ agent:
   # How the agent ends a review. It must appear on a line of its own — step 5
   # of the prompt below is what asks for it.
   completion_marker: SYMPHONY_REVIEW_DONE
+
+  # Ceiling on one agent run. There is no stall detector on the review lane, so
+  # this is what stops a session that never answers from holding its slot
+  # indefinitely — an earlier build passed no timeout at all and sat on one for
+  # ten hours. 15 minutes is generous for reading a single diff.
+  session_timeout_ms: 900000
   # The review agent never shells out, never fetches the web, and never
   # touches a path outside its own disposable workspace. It reads local files
   # (the diff and blobs the review controller already fetched) and writes one
