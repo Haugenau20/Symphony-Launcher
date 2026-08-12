@@ -62,27 +62,45 @@ agent:
   # indefinitely — an earlier build passed no timeout at all and sat on one for
   # ten hours. 15 minutes is generous for reading a single diff.
   session_timeout_ms: 900000
-  # The review agent never shells out, never fetches the web, and never
-  # touches a path outside its own disposable workspace. It reads local files
-  # (the diff and blobs the review controller already fetched) and writes one
-  # file, FINDINGS.json — nothing else.
+  # This is the implementation agent's permission set with execution and egress
+  # taken away, and it is worth understanding why it is not stricter than that.
   #
-  # `edit` is ALLOWED for exactly that reason: FINDINGS.json is the agent's
-  # only output, so an agent that cannot write cannot produce a review at all.
-  # What confines the writing is `external_directory` plus opencode-review's
-  # own OPENCODE_EXTRA_ALLOWED_DIRS — not this line. The workspace holds no
-  # clone, no remote and no credential, and is destroyed after every job.
+  #   edit: allow                FINDINGS.json is the agent's only output. An
+  #                              agent that cannot write cannot review.
+  #   external_directory: allow  Counter-intuitive, and the thing that broke the
+  #                              first deployment. The sandbox lives at
+  #                              /review-workspaces/<key>, OUTSIDE the opencode
+  #                              server's own project root — so the agent's whole
+  #                              workspace is an "external directory" from the
+  #                              server's point of view. Denying this does not
+  #                              confine the agent to its sandbox; it locks it
+  #                              OUT of the sandbox. Reads slipped through, every
+  #                              write came back "permission denied", and the
+  #                              agent burned its turn arguing with the error.
+  #                              The confinement is opencode-review's own
+  #                              OPENCODE_EXTRA_ALLOWED_DIRS=/review-workspaces/**
+  #                              — see docs/IMAGE_CONTRACT.md, which describes
+  #                              that variable as exactly this permission's gate.
+  #                              It has to be `allow` for that allowlist to be
+  #                              consulted at all; `deny` is not a narrower
+  #                              allow, it is a wall.
+  #   bash / webfetch: deny      No execution, no egress. These two are the real
+  #                              restrictions, and the reviewer needs neither.
   #
-  # This block DOCUMENTS the sandbox; it cannot change it. The controller
-  # refuses to start if any line here disagrees with what it actually
-  # enforces, so a stale copy is a startup error rather than a comforting
-  # fiction. The real boundary is that opencode-review's container holds no
-  # repository credential at all (docker/docker-compose.review.yml).
+  # What actually keeps this agent harmless is not this block: it is that
+  # opencode-review holds no repository credential at all, has no route off the
+  # host, and works on a synthetic copy of a diff rather than a git checkout
+  # (docker/docker-compose.review.yml).
+  #
+  # This block DOCUMENTS that; it cannot change it. The controller refuses to
+  # start when a line here disagrees with what it enforces — in either
+  # direction — so a stale copy is a startup error rather than a comforting
+  # fiction.
   permissions:
     edit: allow
+    external_directory: allow
     bash: deny
     webfetch: deny
-    external_directory: deny
 ---
 
 You are reviewing one merge request at one exact revision. Nobody is watching
