@@ -627,6 +627,23 @@ symphony_preflight() {
         fatal=1
       fi
       local agent_token="${GITLAB_PAT:-}"
+      # The other half of the two-token split, and the one nothing checked. A
+      # gitlab-tracker run is branch-and-merge-request shaped: the orchestrator
+      # creates an EMPTY directory and the clone is the agent's first step, so an
+      # agent with no credential cannot even begin. That failure is invisible
+      # until late and reads as nothing at all — the issue moves to In Review
+      # having pushed nothing, and the only clue is six minutes of wall clock.
+      # Refusing here is symmetric with the orchestrator-token check above, and
+      # it costs a second instead of a run.
+      if [ -z "$agent_token" ]; then
+        err "  tracker is gitlab but GITLAB_PAT is empty — the agent cannot clone or push"
+        err "    set it in $(project_env_file "$name") — a Developer token, scoped to this"
+        err "    project, and NOT the orchestrator's Reporter token (SYMPHONY_GITLAB_TOKEN)"
+        err "    it must be per-project: this file is the only layer that reaches the agent"
+        fatal=1
+      else
+        info "  GITLAB_PAT set (should be a Developer project token)"
+      fi
       if [ -n "$sym_token" ] && [ -n "$agent_token" ] && [ "$sym_token" = "$agent_token" ]; then
         # Fatal, not a warning: with one credential doing both jobs there is
         # no containment left to warn about. Either it is Reporter, in which

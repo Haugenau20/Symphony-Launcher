@@ -75,10 +75,54 @@ setup() {
   seed_env
   make_project my-svc gitlab
   printf 'SYMPHONY_GITLAB_TOKEN=reporter-token-abc\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  # The agent's own token, in the one layer that reaches it. A gitlab tracker
+  # without this is now refused: the clone is the agent's first step.
+  printf 'GITLAB_PAT=developer-token-abc\n' > "$SANDBOX/projects/my-svc/.env"
   run_launcher check my-svc
   [ "$status" -eq 0 ]
   [[ "$output" == *"SYMPHONY_GITLAB_TOKEN set"* ]]
   [[ "$output" == *"check passed."* ]]
+}
+
+@test "check: refuses a gitlab tracker with no GITLAB_PAT — the agent cannot clone" {
+  # The failure this was written for: a gitlab project whose agent had no
+  # credential passed check, then burned a six-minute run that could not clone,
+  # moved the issue to In Review, and pushed nothing. The orchestrator's own
+  # token was present, so the existing check had nothing to say.
+  seed_env
+  make_project my-svc gitlab
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-token-abc\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  run_launcher check my-svc
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tracker is gitlab but GITLAB_PAT is empty"* ]]
+  [[ "$output" == *"the agent cannot clone or push"* ]]
+  # Names the file that actually reaches the agent, since that is the mistake:
+  # the shared root .env is read too, but per-project is where it belongs.
+  [[ "$output" == *"projects/my-svc/.env"* ]]
+  [[ "$output" == *"preflight failed"* ]]
+}
+
+@test "check: a BLANK GITLAB_PAT is refused too, not just a missing one" {
+  # projects/<name>/.env.example ships the key blank so a project can null an
+  # inherited value, which makes "present but empty" the likeliest shape of this
+  # mistake rather than an unusual one.
+  seed_env
+  make_project my-svc gitlab
+  printf 'SYMPHONY_GITLAB_TOKEN=reporter-token-abc\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'GITLAB_PAT=\n' > "$SANDBOX/projects/my-svc/.env"
+  run_launcher check my-svc
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tracker is gitlab but GITLAB_PAT is empty"* ]]
+}
+
+@test "check: a file-queue project is NOT asked for an agent token" {
+  # The file queue has no remote to clone from, so demanding a push credential
+  # there would refuse a perfectly valid deployment.
+  seed_env
+  make_project my-svc file_queue
+  run_launcher check my-svc
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"the agent cannot clone or push"* ]]
 }
 
 @test "check: REFUSES when SYMPHONY_GITLAB_TOKEN and GITLAB_PAT are the same token" {
@@ -113,6 +157,7 @@ setup() {
   seed_env
   make_project my-svc gitlab mygroup/myproject
   printf 'SYMPHONY_GITLAB_TOKEN=reporter-token\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'GITLAB_PAT=developer-token-abc\n' > "$SANDBOX/projects/my-svc/.env"
   sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
   sed -i 's|^GIT_REMOTE_ALLOWLIST=.*|GIT_REMOTE_ALLOWLIST=gitlab.example.com/othergroup/otherproject|' "$SANDBOX/.env"
   sed -i 's|^ALLOW_GITLAB_WRITE=.*|ALLOW_GITLAB_WRITE=1|' "$SANDBOX/.env"
@@ -127,6 +172,7 @@ setup() {
   seed_env
   make_project my-svc gitlab mygroup/myproject
   printf 'SYMPHONY_GITLAB_TOKEN=reporter-token\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'GITLAB_PAT=developer-token-abc\n' > "$SANDBOX/projects/my-svc/.env"
   sed -i 's|^ALLOW_REMOTE_GIT=.*|ALLOW_REMOTE_GIT=1|' "$SANDBOX/.env"
   sed -i 's|^GIT_REMOTE_ALLOWLIST=.*|GIT_REMOTE_ALLOWLIST=gitlab.example.com/mygroup/myproject|' "$SANDBOX/.env"
   sed -i 's|^ALLOW_GITLAB_WRITE=.*|ALLOW_GITLAB_WRITE=1|' "$SANDBOX/.env"
