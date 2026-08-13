@@ -48,8 +48,19 @@ that pushed a branch it cannot open a merge request for.
 | `SYMPHONY_REVIEW_WORKFLOW` | fixed at `/config/REVIEW.md` | the review controller's config loader — tracker projects/group, polling, agent limits, and the review agent's prompt |
 | `SYMPHONY_OPENCODE_URL` (symphony-review's copy) | `http://opencode-review:${OPENCODE_INTERNAL_PORT:-4096}`, derived in `docker-compose.review.yml` | symphony-review's readiness wait, following the SAME internal-port rule as the implementation orchestrator's copy — see the invariant below |
 | `SYMPHONY_REVIEW_GITLAB_TOKEN` | `projects/<name>/review.env` (launcher-only, per-project — see `projects/_example/review.env.example`), reaching a container only through the `symphony-review` service's own `environment:` block | the review controller's GitLab client. Never reaches EITHER agent container — see the invariant below |
+| `SYMPHONY_REVIEW_CHECKOUT` | any of the four env layers `symphony_derive_settings` reads (root `.env`, `symphony.env`, per-project `.env`, or `review.env` — see `projects/_example/review.env.example`), reaching a container through the `symphony-review` service's own `environment:` block, default `0` | the review controller's optional shallow-checkout step (symphony-queue's `src/review/checkout.ts`, design report §9 phase 2 slice D). A BEHAVIOUR SWITCH, not a credential — unlike the token directly above, its value carries nothing secret, so it is not subject to the token-isolation invariant below and may appear anywhere in the resolved config |
 | `OPENCODE_EXTRA_ALLOWED_DIRS` (opencode-review's copy) | fixed at `/review-workspaces/**` in `docker-compose.review.yml`'s `opencode-review` service `environment:` | the review agent's `permission.external_directory` gate, same reasoning as the implementation agent's copy, retargeted at review's own workspaces |
 | `SYMPHONY_REVIEW_STORE_PATH` / `SYMPHONY_REVIEW_WORKSPACES_PATH` | derived by `symphony_derive_settings` (`lib/symphony.sh`) from `projects/<name>/{review-store,review-workspaces}`, following the exact same absolute-path-by-string-concatenation rule as `SYMPHONY_QUEUE_PATH` / `SYMPHONY_WORKSPACES_PATH` | the host-side bind-mount sources for `symphony-review`'s (and, for the workspaces path, `opencode-review`'s) volumes |
+
+**The `-symphony` image now bundles `git`.** It is there for the CONTROLLER
+side of `SYMPHONY_REVIEW_CHECKOUT` above — `symphony-review` clones, shallow,
+at the pinned head SHA, then deletes `.git` and verifies it is gone before
+the review agent's sandbox is ever built (symphony-queue's
+`src/review/checkout.ts`). The agent images (`opencode` / `opencode-review`)
+get none of this: no git binary, no token, no egress, and by construction —
+`.git` is deleted before the sandbox exists — no repository at all. This is
+what keeps "the reviewer cannot push" mechanical: the capability to run git
+lives only in the one image that holds no credential a push could use.
 
 `opencode-review`'s `env_file:` layer is `.env` **alone** — deliberately not
 `${PROJECT_ENV_FILE}`. `projects/<name>/.env` is where `GITLAB_PAT` (and
