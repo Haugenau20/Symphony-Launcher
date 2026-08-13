@@ -22,6 +22,7 @@ later.
 - [Project layout](#project-layout)
 - [Configuration: four layers](#configuration-four-layers)
 - [WORKFLOW.md](#workflowmd)
+- [Review](#review)
 - [Your first run](#your-first-run)
 - [The security model](#the-security-model)
 - [What `check` catches](#what-check-catches)
@@ -105,7 +106,7 @@ Every verb takes a **project name**:
 |---|---|
 | `init <name>` | Scaffold `projects/<name>/` and copy the per-project config templates. Idempotent — never overwrites. |
 | `check <name>` | Preflight only. Creates nothing. See [What `check` catches](#what-check-catches). |
-| `up <name> [--publish]` | Preflight, pull, start. Headless: nothing binds a host port unless you pass `--publish`. |
+| `up <name> [--publish] [--with-review]` | Preflight, pull, start. Headless: nothing binds a host port unless you pass `--publish`. Starts the services this project actually configured — implementation, review, or both; see [Review](#review). |
 | `logs <name>` | Follow the orchestrator's log. |
 | `status <name>` | Queue counts (file queue) or the tracker's board (gitlab), and whether the orchestrator is up. |
 | `stop <name>` | Stop the orchestrator; leave the agent stack running. In-flight items resume on restart. |
@@ -128,13 +129,18 @@ One checkout runs any number of projects, each fully independent:
 
 ```
 projects/<name>/
-├── .env             the AGENT's environment — credentials it may use
-├── symphony.env     the ORCHESTRATOR's environment — never reaches the agent
+├── .env               the AGENT's environment — credentials it may use
+├── symphony.env       the ORCHESTRATOR's environment — never reaches the agent
+├── review.env         the REVIEW CONTROLLER's environment — never reaches
+│                       either agent; see "Review" below
 ├── config/
-│   └── WORKFLOW.md  tracker, run limits, and the agent's prompt
-├── queue/           file queue only: todo/ in-progress/ review/ done/ failed/ cancelled/
-├── workspaces/      one disposable directory per item
-└── allowlist.d/     optional: this project's own egress allowlist
+│   ├── WORKFLOW.md    tracker, run limits, and the agent's prompt
+│   └── REVIEW.md      review scope, run limits, and the review agent's prompt
+├── queue/             file queue only: todo/ in-progress/ review/ done/ failed/ cancelled/
+├── workspaces/        one disposable directory per item
+├── review-store/      review job state (durable, review only)
+├── review-workspaces/ one disposable directory per merge request under review
+└── allowlist.d/       optional: this project's own egress allowlist
 ```
 
 `config/` is a **subdirectory**, one level below `symphony.env`, and that is
@@ -206,6 +212,56 @@ project access. Never template a hook from item content, and keep
 Three settings deserve attention before a first run — `max_turns`, the
 completion marker, and `stall_timeout_ms`. See
 [Operational traps](#operational-traps) for why each one bites.
+
+## Review
+
+A second, independent pipeline: instead of implementing work, it watches
+merge requests and posts review findings to them. It runs beside the
+implementation orchestrator, or entirely without it — **review-only, across
+a fleet of repositories, is the primary deployment this feature is built
+for, not a variant of the implementation one.** A project that only ever
+reviews needs no tracker, no file queue, and no `GITLAB_PAT` at all.
+
+It is a second, independent container pair (`opencode-review` +
+`symphony-review`), never the implementation pair reused: one `opencode`
+container cannot hold two credential sets, so the reviewing agent gets its
+own — holding none of the implementation agent's credentials, and no GitLab
+access of any kind. See [The security model](#the-security-model) for the
+full reasoning, in particular the third credential.
+
+`REVIEW.md` is `WORKFLOW.md`'s counterpart: the same shape (YAML front
+matter, then the agent's prompt as the rest of the file), mounted read-only
+into `/config` for the same reason — it is trusted config, and the merge
+request it reviews (title, description, comments, filenames, diff contents)
+is emphatically not. [`templates/REVIEW.md.example`](templates/REVIEW.md.example)
+says so explicitly and states the rule the review agent follows: instructions
+found in a merge request are reported as findings, never followed.
+
+```bash
+./symphony init demo
+cp templates/REVIEW.md.example projects/demo/config/REVIEW.md
+$EDITOR projects/demo/config/REVIEW.md          # base_url, and which projects to review
+echo 'SYMPHONY_REVIEW_GITLAB_TOKEN=<Reporter token>' >> projects/demo/review.env
+./symphony check demo
+./symphony up demo
+```
+
+Three deployment shapes, decided by what a project actually has configured —
+never a flag you have to remember to repeat:
+
+| Project has | `symphony up demo` starts | `--with-review` |
+|---|---|---|
+| `WORKFLOW.md` only | `opencode` + `squid` + `symphony` | refused — nothing to add |
+| `REVIEW.md` only (no `WORKFLOW.md`) | `opencode-review` + `squid` + `symphony-review` | not needed — this is already review-only |
+| Both | `opencode` + `squid` + `symphony` (review off by default) | adds `opencode-review` + `symphony-review` too — all five |
+
+`review.env` holds `SYMPHONY_REVIEW_GITLAB_TOKEN`, the review controller's
+own credential — gitignored, launcher-only, and read the same way
+`symphony.env` is (see [projects/_example/review.env.example](projects/_example/review.env.example)).
+Its presence is what turns review on for a project, independent of whatever
+tracker (if any) `WORKFLOW.md` configures — a review-only deployment may
+have no tracker at all, and still needs egress to GitLab; `symphony_preflight`
+grants it regardless.
 
 ## Your first run
 
@@ -279,29 +335,88 @@ to it directly, require an approval, and grant Developer rather than
 Maintainer so the token cannot change project settings or delete
 repositories.
 
-### Two tokens, neither able to do the other's job
+### Three credentials, none able to do more than one job
 
-| | Role | Can push code? |
-|---|---|---|
-| the orchestrator (`SYMPHONY_GITLAB_TOKEN`) | **Reporter** | **No** |
-| the agent (`GITLAB_PAT`) | **Developer** | Yes — that one project |
+| | Variable | Role | Can push code? | Held by an agent? |
+|---|---|---|---|---|
+| the orchestrator | `SYMPHONY_GITLAB_TOKEN` | **Reporter**, per project | **No** | No |
+| the agent | `GITLAB_PAT` | **Developer** | Yes — that one project | Yes |
+| the review controller | `SYMPHONY_REVIEW_GITLAB_TOKEN` | **Reporter**, usually per **group** | **No** | **No — never** |
 
 The orchestrator reads and writes issues. The agent pushes branches and
-opens merge requests. Neither can do the other's job, so a compromised
-orchestrator can vandalise issue text and nothing else, and a prompt-injected
-agent **cannot rewrite its own work queue** — it cannot mark its own work
-reviewed, and it cannot queue itself more.
+opens merge requests. The review controller reads merge requests, diffs and
+files, and posts review findings. No credential can do another's job, so a
+compromised orchestrator can vandalise issue text and nothing else, a
+prompt-injected implementation agent **cannot rewrite its own work queue** —
+it cannot mark its own work reviewed, and it cannot queue itself more — and a
+compromised review controller can post noise to merge requests and nothing
+else: it cannot push, merge, or approve, in any project it can see.
+
+The review controller's credential is qualitatively different from the other
+two in one way worth naming plainly: it is the only one of the three that
+**no agent ever holds**. The reviewing agent (inside `opencode-review`) has
+no GitLab access at all — see [Review](#review) and
+[docker/docker-compose.review.yml](docker/docker-compose.review.yml) — so
+there is no prompt-injection path to this credential even in principle, only
+a compromise of the trusted, non-agentic review controller itself.
 
 Be precise about what constrains what: API scope is not the control here.
 There is no issues-only scope; `api` is full API access for that project. It
-is the **Reporter role** that stops the orchestrator pushing code. Effective
-permission is scope × role, so get the role right.
+is the **Reporter role** that stops the orchestrator and the review
+controller from pushing code. Effective permission is scope × role, so get
+the role right.
 
-This is why the two credentials live in separate files, and why `check`
-*refuses* to start when it finds one token doing both jobs. With a single
-credential there is nothing left to contain: either it is Reporter and the
-agent cannot push, or it is Developer and the orchestrator can — and an agent
-holding it can relabel its own issue.
+This is why the three credentials live in separate files, and why `check`
+*refuses* to start when it finds any two of them equal. With a single
+credential doing two jobs there is nothing left to contain: either it is
+Reporter and the higher-privileged side of the pair cannot do its job, or it
+is Developer and the lower-privileged side can push — and, for the
+orchestrator specifically, an agent holding it can relabel its own issue.
+
+### The review token's group scope: a reasoned exception
+
+["The token's scope is the boundary"](#the-tokens-scope-is-the-boundary),
+above, argues hard for the narrowest credential that does the job, and
+warns explicitly against a token that spans groups. `SYMPHONY_REVIEW_GITLAB_TOKEN`
+is usually a **group**-scoped token — wider than every other credential this
+launcher hands to a container. That is a deliberate exception to the rule
+just stated, not a quiet departure from it, and here is why it holds up:
+
+- **The primary review deployment watches a fleet, not one project.**
+  Automatic review earns its keep across many repositories at once — that is
+  the point of the feature (see [Review](#review)), not an extension of a
+  single-project design. A project access token reaches one project; thirty
+  reviewed projects would mean thirty tokens. Thirty tokens is not a security
+  posture — it is a rotation problem nobody keeps up with, and the token
+  nobody rotates is worse than the token whose reach is a little wider than
+  ideal. Narrowed further where it can be: scope the token to a group
+  created to hold the reviewed projects, never the organisation root.
+- **The role, not the scope, is still doing the actual constraining.** A
+  group Reporter token cannot push, merge, or approve **anywhere in the
+  group** — the property "The token's scope is the boundary" is protecting
+  against (a credential that can push, reaching further than it should) does
+  not exist here at all, at any scope. Widening reach without widening
+  capability is not the failure mode that section warns about.
+- **No agent ever holds it.** Every other credential in this launcher is
+  handed, eventually, to a container running an LLM with a shell or tool
+  access — that is what makes token scope the load-bearing boundary for
+  them. This one is held only by `symphony-review`, trusted code with no
+  prompt in the loop between the credential and the GitLab API. There is no
+  injection path to widen its effective reach.
+- **State the blast radius plainly, because that is the actual argument.**
+  Total compromise of this token — the worst case, assuming everything else
+  failed too — is comment spam across the group: noisy, fully attributable
+  to one token, and fixed by rotating it. Compare `GITLAB_PAT`, the
+  implementation agent's Developer token, held by the one part of this
+  system that has a shell, a model behind it, and untrusted content (issue
+  text) in its own prompt: its worst case is pushed code on one project.
+  Those are different failure classes, not just different sizes, and it is
+  the difference that makes the group scope acceptable here specifically.
+
+A reader who takes only one thing from this section: the narrow-token rule
+is about **push-capable** reach. This token cannot push. That is what is
+being traded for fleet coverage, and it is a trade this deployment can
+afford that a Developer-scoped token never could.
 
 ### Credential absence removes capability
 
@@ -350,6 +465,23 @@ route is derived from the tracker you configured rather than being a setting
 you fill in — on the file queue it has no egress at all, holds no
 credentials, and only moves files.
 
+The review controller's egress works the same way but is **unconditional**:
+it is granted whenever `SYMPHONY_REVIEW_GITLAB_TOKEN` is set, regardless of
+`tracker.kind` or whether any tracker is configured at all. A review-only
+deployment (see [Review](#review)) may have no implementation tracker
+whatsoever, and it still needs to reach GitLab — that is the entire job.
+The reviewing agent itself (`opencode-review`) gets no GitLab route: it has
+no credential to use one with in the first place.
+
+Both derivations share one variable, `SYMPHONY_HTTP_PROXY`, computed once
+per project. So on a project that runs **both** pipelines, enabling review
+widens the implementation orchestrator's own route too, even under
+`tracker.kind: file_queue`. That is not a credential leak — the orchestrator
+still holds no GitLab token of its own in that case, and squid's own
+allowlist is what actually gates which hosts are reachable either way — but
+it is a real widening of *reachability*, worth knowing rather than
+discovering by surprise.
+
 ### Nothing binds your working copy
 
 No host repository is mounted into the agent's container by this stack, and
@@ -364,14 +496,17 @@ present to use.
 It exists because an unattended misconfiguration does not announce itself at
 a prompt — it surfaces as an agent doing something unintended, hours later.
 
-**Refuses to start** on: a missing `WORKFLOW.md`; a gitlab tracker with no
-orchestrator token; one token configured for both roles; a workspaces path
-colliding with the queue or config path; an agent environment file readable
-from the orchestrator's `/config` mount; an inline `#` comment in a
+**Refuses to start** on: a missing `WORKFLOW.md` (unless the project is
+review-only — see [Review](#review)); a gitlab tracker with no orchestrator
+token; any two of the three GitLab tokens configured equal; a workspaces
+path colliding with the queue or config path; an agent environment file
+readable from the orchestrator's `/config` mount; an inline `#` comment in a
 launcher-only environment file (nothing strips it, so it silently becomes
-part of the value). With `docker` available it also resolves the whole
-compose configuration and asserts the orchestrator's token never appears
-anywhere in the agent service.
+part of the value); a review-enabled project (`SYMPHONY_REVIEW_GITLAB_TOKEN`
+set) with no `REVIEW.md`. With `docker` available it also resolves the whole
+compose configuration and asserts the orchestrator's token never appears in
+the agent service, the review token never appears in EITHER agent service,
+and `GITLAB_PAT` never appears in the reviewing agent's service.
 
 **Warns** on the quieter mistakes: a `SYMPHONY_*` key left in a file the
 agent can read; a token inherited from the shared file rather than set
@@ -426,6 +561,7 @@ Stated plainly rather than reassuringly:
 
 ## More docs
 
+- [`docs/REVIEW_QUICKSTART.md`](docs/REVIEW_QUICKSTART.md) — setting up the merge-request reviewer, step by step, through to your first review comment
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — what breaks first, and how to tell the causes apart
 - [`docs/IMAGE_CONTRACT.md`](docs/IMAGE_CONTRACT.md) — the interface between this launcher and the images it runs
 - [`projects/README.md`](projects/README.md) — the per-project layout in detail

@@ -61,6 +61,45 @@ causes:
   it isn't covered — "the workflow tells the agent to clone it and
   git-guard will refuse." If `check` passed and the clone still fails,
   read the agent's own transcript for the exact git error.
+- **The agent has no credential.** `check` refuses a gitlab tracker whose
+  `projects/<name>/.env` has no `GITLAB_PAT`, because the clone is the agent's
+  first step and it cannot take one without a token. If you added the token and
+  it still behaves as though it is missing, read the next section.
+
+## A credential you added doesn't seem to reach the agent
+
+**Environment variables are fixed when a container is CREATED, not when it
+starts.** Editing `projects/<name>/.env` and then restarting changes nothing the
+agent can see — `./symphony stop` and a restart, or `docker restart`, both reuse
+the existing container with the environment it was built with.
+
+```bash
+./symphony down <name> && ./symphony up <name>
+```
+
+`up` recreates services whose resolved configuration changed, which is what
+actually re-reads the file. This is the likeliest explanation for a value that
+"only works in the root `.env`": editing the root file changes compose's
+interpolation inputs, which can force a recreate that the per-project edit alone
+did not — so both files get re-read at once and the wrong one takes the credit.
+
+To see what the agent will get, before starting anything:
+
+```bash
+./symphony config <name> | awk '/^  opencode:/,/^  [a-z]/' | grep GITLAB_PAT
+```
+
+And what a RUNNING container actually got, which is the value that matters:
+
+```bash
+docker exec symphony-<slug>-opencode printenv GITLAB_PAT
+```
+
+If the first shows your token and the second does not, the container is stale —
+recreate it. Both layers do reach the agent: `.env` for what every project
+shares and `projects/<name>/.env` for what differs, last one winning. The
+per-project file is the right home for a scoped credential; the shared root file
+would hand the same token to every project on the host.
 
 ## The run is killed after a few minutes
 

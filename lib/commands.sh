@@ -117,30 +117,42 @@ cmd_check() {
   fi
 
   if command -v docker >/dev/null 2>&1; then
-    info "cross-checking 'docker compose config' for a leaked SYMPHONY_GITLAB_TOKEN ..."
+    info "cross-checking 'docker compose config' for leaked credentials ..."
+    local resolved
+    resolved="$("${COMPOSE[@]}" config 2>/dev/null)" || resolved=""
+
+    # Isolate each service's own block among its siblings under `services:`
+    # (2-space-indented keys), so a token that legitimately appears in ITS
+    # OWN service's block (that IS the mechanism — see the header of
+    # lib/symphony.sh) never produces a false alarm against a DIFFERENT
+    # service. Any line indented deeper than 2 spaces belongs to the current
+    # block; the next 2-space (or 0-space, e.g. `networks:`) line ends it.
+    # `opencode-review:` never matches the `opencode:` pattern below — after
+    # "opencode" the former has a literal "-", the pattern requires ":" —
+    # so the two blocks stay cleanly separate with the same awk shape.
+    local opencode_block opencode_review_block
+    opencode_block="$(printf '%s\n' "$resolved" | awk '
+      /^  opencode:/ { grab=1; print; next }
+      grab && /^([A-Za-z]|  [A-Za-z])/ { grab=0 }
+      grab { print }
+    ')"
+    opencode_review_block="$(printf '%s\n' "$resolved" | awk '
+      /^  opencode-review:/ { grab=1; print; next }
+      grab && /^([A-Za-z]|  [A-Za-z])/ { grab=0 }
+      grab { print }
+    ')"
+
     local token="${SYMPHONY_GITLAB_TOKEN:-}"
     if [ -n "$token" ]; then
-      local resolved opencode_block
-      resolved="$("${COMPOSE[@]}" config 2>/dev/null)" || resolved=""
       # One token configured for BOTH roles would also match the search below,
       # for a completely different reason and with a different fix. That case
       # is fatal in symphony_preflight above, so it cannot reach here — and
       # GITLAB_PAT's own value is excluded from the block anyway, so this
       # check reports only the thing it names: a Reporter token that arrived
       # in the agent's environment through the env layering.
-      resolved="$(printf '%s\n' "$resolved" | grep -vE '^[[:space:]]*GITLAB_PAT:[[:space:]]' || true)"
-      # Isolate the `opencode:` service block among its siblings under
-      # `services:` (2-space-indented keys), so a token that legitimately
-      # appears in the SYMPHONY service's own block (that IS the mechanism
-      # — see the header of lib/symphony.sh) never produces a false alarm
-      # here. Any line indented deeper than 2 spaces belongs to the current
-      # block; the next 2-space (or 0-space, e.g. `networks:`) line ends it.
-      opencode_block="$(printf '%s\n' "$resolved" | awk '
-        /^  opencode:/ { grab=1; print; next }
-        grab && /^([A-Za-z]|  [A-Za-z])/ { grab=0 }
-        grab { print }
-      ')"
-      if [ -n "$opencode_block" ] && printf '%s' "$opencode_block" | grep -qF -- "$token"; then
+      local oc_filtered
+      oc_filtered="$(printf '%s\n' "$opencode_block" | grep -vE '^[[:space:]]*GITLAB_PAT:[[:space:]]' || true)"
+      if [ -n "$oc_filtered" ] && printf '%s' "$oc_filtered" | grep -qF -- "$token"; then
         err "  SYMPHONY_GITLAB_TOKEN's value appears in the resolved opencode service config"
         err "    it must never reach the agent's container — see lib/symphony.sh's header"
         failed=1
@@ -149,6 +161,49 @@ cmd_check() {
       fi
     else
       info "  no SYMPHONY_GITLAB_TOKEN set — nothing to check"
+    fi
+
+    # The review token gets the SAME cross-check, against BOTH agent
+    # services: it must never reach opencode (the implementation agent)
+    # any more than opencode-review (its own agent) should ever have held
+    # it in the first place — see README's "The security model" and
+    # docs/IMAGE_CONTRACT.md.
+    local review_token="${SYMPHONY_REVIEW_GITLAB_TOKEN:-}"
+    if [ -n "$review_token" ]; then
+      local oc_filtered2 ocr_filtered leaked=0
+      oc_filtered2="$(printf '%s\n' "$opencode_block" | grep -vE '^[[:space:]]*GITLAB_PAT:[[:space:]]' || true)"
+      ocr_filtered="$(printf '%s\n' "$opencode_review_block" | grep -vE '^[[:space:]]*GITLAB_PAT:[[:space:]]' || true)"
+      if [ -n "$oc_filtered2" ] && printf '%s' "$oc_filtered2" | grep -qF -- "$review_token"; then
+        err "  SYMPHONY_REVIEW_GITLAB_TOKEN's value appears in the resolved opencode service config"
+        leaked=1
+      fi
+      if [ -n "$ocr_filtered" ] && printf '%s' "$ocr_filtered" | grep -qF -- "$review_token"; then
+        err "  SYMPHONY_REVIEW_GITLAB_TOKEN's value appears in the resolved opencode-review service config"
+        leaked=1
+      fi
+      if [ "$leaked" -ne 0 ]; then
+        err "    it must never reach an agent container — see lib/symphony.sh's header"
+        failed=1
+      else
+        info "  PASS: SYMPHONY_REVIEW_GITLAB_TOKEN does not appear in either agent service's resolved config"
+      fi
+
+      # GITLAB_PAT — the agent's OWN Developer, push-capable token — must
+      # never appear in opencode-review's block either. This is the check
+      # that makes "the reviewer cannot push" mechanical rather than
+      # instructional: it is not enough that the reviewer never receives its
+      # OWN push credential, it must never receive the implementation
+      # agent's either.
+      local agent_pat="${GITLAB_PAT:-}"
+      if [ -n "$agent_pat" ] && [ -n "$opencode_review_block" ] && printf '%s' "$opencode_review_block" | grep -qF -- "$agent_pat"; then
+        err "  GITLAB_PAT's value appears in the resolved opencode-review service config"
+        err "    the reviewer must never be able to push — see docker/docker-compose.review.yml"
+        failed=1
+      else
+        info "  PASS: GITLAB_PAT does not appear in the opencode-review service's resolved config"
+      fi
+    else
+      info "  no SYMPHONY_REVIEW_GITLAB_TOKEN set — nothing to check"
     fi
   else
     warn "docker not found on PATH — skipping the compose-config credential cross-check"
@@ -163,15 +218,25 @@ cmd_check() {
 
 # --- up --------------------------------------------------------------------------
 
-# cmd_up NAME [--publish] — preflight (abort before any docker call on
-# failure), create dirs, pull, then start opencode+squid+symphony (plus the
-# `publish` service only with --publish, which is the only path that ever
-# binds a host port).
+# cmd_up NAME [--publish] [--with-review] — preflight (abort before any
+# docker call on failure), create dirs, pull, then start the services this
+# project actually configured:
+#   * implementation only (has config/WORKFLOW.md, no --with-review):
+#     opencode + squid + symphony — unchanged from before this feature.
+#   * review-only (SYMPHONY_REVIEW_GITLAB_TOKEN set, no WORKFLOW.md — the
+#     primary deployment, see templates/REVIEW.md.example): opencode-review +
+#     squid + symphony-review. Neither opencode nor symphony starts, because
+#     neither is configured.
+#   * both (WORKFLOW.md present AND SYMPHONY_REVIEW_GITLAB_TOKEN set AND
+#     --with-review passed): all five.
+# `--publish` additionally starts the `publish` service and binds a host
+# port — the only path that ever does.
 cmd_up() {
-  local name="" publish=0
+  local name="" publish=0 with_review=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --publish) publish=1; shift ;;
+      --with-review) with_review=1; shift ;;
       -*) die "unknown option: $1" ;;
       *)
         if [ -n "$name" ]; then die "unexpected extra argument: $1"; fi
@@ -190,6 +255,25 @@ cmd_up() {
   symphony_preflight "$name" \
     || die "preflight failed — nothing started. Fix the above and re-run, or run 'symphony check $name' for detail only."
 
+  # --with-review without a review token configured is a request this project
+  # cannot fulfil yet — fail with the same actionable hint symphony_preflight
+  # gives, rather than silently starting nothing extra.
+  local review_token="${SYMPHONY_REVIEW_GITLAB_TOKEN:-}"
+  if [ "$with_review" -eq 1 ] && [ -z "$review_token" ]; then
+    die "--with-review requires SYMPHONY_REVIEW_GITLAB_TOKEN — set it in $(symphony_review_env_file "$name") (see projects/_example/review.env.example)"
+  fi
+
+  # start_impl: this project has an implementation tracker configured at all.
+  # start_review: review runs when a token is configured AND either
+  # --with-review was explicitly passed (the "both" deployment) OR there is
+  # no implementation tracker to begin with (the review-only deployment,
+  # which needs no flag — it is simply what this project IS).
+  local start_impl=0 start_review=0
+  [ -f "$SYM_WORKFLOW" ] && start_impl=1
+  if [ -n "$review_token" ] && { [ "$with_review" -eq 1 ] || [ "$start_impl" -eq 0 ]; }; then
+    start_review=1
+  fi
+
   symphony_ensure_dirs "$name"
 
   if [ "$publish" -eq 1 ]; then
@@ -200,20 +284,27 @@ cmd_up() {
     COMPOSE+=(-f "$__SYM_DIR/docker/docker-compose.publish.yml")
   fi
 
+  # Service lists built in a fixed order (opencode[-review] before squid
+  # before symphony[-review] before publish) so an implementation-only `up`
+  # with no review configured produces EXACTLY the same argv as before this
+  # feature existed.
+  local pull_list=() up_list=()
+  if [ "$start_impl" -eq 1 ]; then pull_list+=(opencode); up_list+=(opencode); fi
+  if [ "$start_review" -eq 1 ]; then pull_list+=(opencode-review); up_list+=(opencode-review); fi
+  pull_list+=(squid); up_list+=(squid)
+  if [ "$start_impl" -eq 1 ]; then pull_list+=(symphony); up_list+=(symphony); fi
+  if [ "$start_review" -eq 1 ]; then pull_list+=(symphony-review); up_list+=(symphony-review); fi
+  if [ "$publish" -eq 1 ]; then up_list+=(publish); fi
+
   # A missing `-symphony` tag in the registry is expected until it has been
   # published — this repo is pull-only (see docker/docker-compose.symphony.yml's
   # header). A pull failure here is not a bug in this launcher.
-  info "pulling images for symphony-${name} (opencode, squid, symphony) ..."
+  info "pulling images for symphony-${name} (${pull_list[*]}) ..."
   info "  note: a missing '-symphony' tag in the registry is expected until a release is cut"
-  "${COMPOSE[@]}" pull opencode squid symphony
+  "${COMPOSE[@]}" pull "${pull_list[@]}"
 
-  if [ "$publish" -eq 1 ]; then
-    info "starting symphony-${name} (opencode + squid + symphony + publish) ..."
-    "${COMPOSE[@]}" up -d opencode squid symphony publish
-  else
-    info "starting symphony-${name} (opencode + squid + symphony; no published port) ..."
-    "${COMPOSE[@]}" up -d opencode squid symphony
-  fi
+  info "starting symphony-${name} (${up_list[*]}) ..."
+  "${COMPOSE[@]}" up -d "${up_list[@]}"
 
   echo
   symphony_queue_status "$name"
@@ -224,9 +315,11 @@ cmd_up() {
 
 # --- logs ------------------------------------------------------------------------
 
-# cmd_logs NAME — follow the orchestrator's log. No-ops (not an error) when
-# the orchestrator container is not running, rather than calling compose at
-# all.
+# cmd_logs NAME — follow the orchestrator's log: the implementation
+# orchestrator (symphony) if it is running, else the review controller
+# (symphony-review) if THAT is running, else no-op (not an error) rather than
+# calling compose at all. A review-only project has no symphony container to
+# ever be running, so this falls straight through to symphony-review.
 cmd_logs() {
   local name="${1:-}"
   [ -n "$name" ] || { usage; die "logs requires a project name"; }
@@ -237,20 +330,32 @@ cmd_logs() {
   local SYM_CONFIG_DIR SYM_QUEUE_DIR SYM_WORKSPACES_DIR SYM_ENV_FILE SYM_SYMPHONY_ENV_FILE SYM_WORKFLOW SYM_ALLOWLIST_DIR SYM_CONTAINER
   symphony_derive_settings "$name"
 
-  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SYM_CONTAINER"; then
-    info "$SYM_CONTAINER is not running — nothing to tail. Start it with: symphony up $name"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SYM_CONTAINER"; then
+    info "tailing logs for $SYM_CONTAINER (Ctrl-C detaches; the stack keeps running) ..."
+    "${COMPOSE[@]}" logs -f --tail=100 symphony
     return 0
   fi
 
-  info "tailing logs for $SYM_CONTAINER (Ctrl-C detaches; the stack keeps running) ..."
-  "${COMPOSE[@]}" logs -f --tail=100 symphony
+  local review_container
+  review_container="$(symphony_review_container_name "$name")"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$review_container"; then
+    info "tailing logs for $review_container (Ctrl-C detaches; the stack keeps running) ..."
+    "${COMPOSE[@]}" logs -f --tail=100 symphony-review
+    return 0
+  fi
+
+  info "$SYM_CONTAINER is not running — nothing to tail. Start it with: symphony up $name"
+  return 0
 }
 
 # --- status ----------------------------------------------------------------------
 
 # cmd_status NAME — per-state queue counts (file_queue) or the tracker's
 # project/board (gitlab — never file counts, see symphony_queue_status),
-# plus whether the orchestrator container is running.
+# plus whether the orchestrator container is running, plus whether the
+# review controller is running too — but only when this project actually has
+# review configured (review.env or config/REVIEW.md present); see
+# symphony_queue_status.
 cmd_status() {
   local name="${1:-}"
   [ -n "$name" ] || { usage; die "status requires a project name"; }
@@ -287,9 +392,13 @@ cmd_stop() {
 # --- down ------------------------------------------------------------------------
 
 # cmd_down NAME — tear down the whole stack (opencode + squid + symphony,
-# plus the publish service if it was ever brought up — `down` with no service list
-# tears down everything compose knows about for this project, published or
-# not).
+# plus the publish service if it was ever brought up, plus opencode-review +
+# symphony-review if review is configured for this project — `down` with no
+# service list tears down everything compose knows about for this project,
+# whichever services were actually ever started. symphony_derive_settings
+# already puts docker-compose.review.yml on COMPOSE whenever
+# SYMPHONY_REVIEW_GITLAB_TOKEN is set, so this needs no review-specific logic
+# of its own).
 cmd_down() {
   local name="${1:-}"
   [ -n "$name" ] || { usage; die "down requires a project name"; }

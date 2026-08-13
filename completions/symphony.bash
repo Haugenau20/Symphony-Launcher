@@ -7,8 +7,9 @@
 #
 # Completes the verb, then a project name for every verb that takes one
 # (read from projects/*/, excluding the _example template), then --publish
-# after `up`. The verb list is a maintained static copy — keep it in sync
-# with usage() in ../symphony whenever a verb is added/removed/renamed there.
+# and --with-review after `up`. The verb list is a maintained static copy —
+# keep it in sync with usage() in ../symphony whenever a verb is
+# added/removed/renamed there.
 
 _symphony_verbs=(
   init check up logs status stop down add config
@@ -53,11 +54,11 @@ _symphony_complete() {
   local v
   for v in "${_symphony_name_verbs[@]}"; do
     if [ "$verb" = "$v" ]; then
-      # A word starting with '-' is a flag, not a project name. --publish is
-      # the only flag, and only `up` accepts it.
+      # A word starting with '-' is a flag, not a project name. --publish and
+      # --with-review are the only flags, and only `up` accepts either.
       if [ "${cur:0:1}" = "-" ]; then
         if [ "$verb" = "up" ]; then
-          COMPREPLY=($(compgen -W "--publish" -- "$cur"))
+          COMPREPLY=($(compgen -W "--publish --with-review" -- "$cur"))
         fi
         return 0
       fi
