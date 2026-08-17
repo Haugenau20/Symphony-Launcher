@@ -219,7 +219,14 @@ than being partly published. So:
   key, not `""` — for `line` when the finding is not about one specific line,
   and for `suggestion` when you have no concrete fix to offer.
 - **Do not add keys** that are not in the example. An unknown key is rejected.
-- `severity` is exactly one of `blocking`, `concern`, `nit`.
+- `severity` is exactly one of `blocking`, `concern`, `nit`:
+  - `blocking` — a correctness, security or data-loss problem. This should not
+    merge as it stands.
+  - `concern` — worth a human's judgement before merging. You believe it is a
+    problem; you may be missing context that makes it fine.
+  - `nit` — optional polish. Take it or leave it, and never a reason to hold up
+    a merge. (The published comment heads this section "Minor", since "nit" is
+    reviewer jargon; the value you write here stays `nit`.)
 - `lineType` is exactly one of `added`, `removed`, `context`, and must match what
   the line actually is in the diff: `added` for a `+` line, `removed` for a `-`
   line, `context` for an unchanged one.
