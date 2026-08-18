@@ -81,6 +81,28 @@ review:
   critique: true
   critique_timeout_ms: 600000
 
+  # INLINE COMMENTS. A finding that can be tied to a specific line becomes a
+  # comment ON that line in the merge request's Changes view, instead of an
+  # entry in the single summary comment. Anything that cannot be placed with
+  # certainty stays in the summary comment: the position is validated against
+  # the diff, and a finding whose line cannot be confirmed is never guessed
+  # at — a comment on the wrong line is worse than no comment.
+  #
+  # The summary comment is still posted every single time, even when every
+  # finding went inline and even when there are no findings at all, so
+  # silence still means the reviewer did not run.
+  #
+  # Re-reviewing a new commit replies to the previous revision's threads and
+  # resolves them where the token is permitted to. A Reporter-role token may
+  # not be allowed to resolve a thread; when it is not, the reply stands on
+  # its own and the thread stays open — this does not retry or escalate, it
+  # is simply what the token could do.
+  #
+  # On by default in this template: this deployment is not live anywhere and
+  # watches only one test repository, so shipping it off would just mean
+  # turning it on immediately.
+  inline_comments: true
+
   # OPTIONAL wider context: a read-only copy of the repository at this merge
   # request's exact commit, so the reviewer can see the caller of a changed
   # function, the test that was not touched, or the interface a new class claims

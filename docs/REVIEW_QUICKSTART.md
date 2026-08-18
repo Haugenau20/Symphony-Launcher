@@ -21,7 +21,8 @@ commit, it:
 3. runs a reviewing agent that has **no GitLab token, no network access, and
    no ability to edit, run shell commands, or leave that directory**,
 4. validates what the agent produced, re-checks that the commit has not
-   moved, and posts **one summary comment** on the merge request.
+   moved, and posts **inline comments on individual diff lines for findings
+   it can place with certainty, plus a summary comment** every time.
 
 The agent never touches GitLab. A separate trusted component holds the
 credential and does the posting. That split is the whole design: if the agent
@@ -30,7 +31,12 @@ it could do is produce a bad review.
 
 ## What it does not do (yet)
 
-- **No inline comments on diff lines.** One summary comment per revision.
+- **Inline comments are best-effort, not guaranteed.** A finding is only
+  placed on its diff line when the position can be validated against the
+  diff with certainty; anything that cannot be confirmed stays in the
+  summary comment instead of being guessed at. The summary comment is always
+  posted, with or without inline findings — see `review.inline_comments`
+  below.
 - **No fork merge requests.** They are detected and skipped with a recorded
   reason. Supporting them means widening the token, which breaks the model.
 - **No webhooks.** It polls. That means it works behind NAT and recovers on
@@ -111,6 +117,25 @@ review:
 
 Once you trust it, swap `projects:` for `group_id: my-group` — one API call per
 poll no matter how many repositories the group holds.
+
+### `review.inline_comments`
+
+```yaml
+review:
+  inline_comments: true   # the shipped default
+```
+
+When `true`, a finding tied to a specific line is posted as a comment on
+that line in the merge request's Changes view, instead of only appearing in
+the summary comment. A finding whose line cannot be confirmed against the
+diff always falls back to the summary comment rather than being guessed at,
+and the summary comment is posted on every review regardless — even one
+with no findings at all.
+
+Re-reviewing a new commit replies to the previous revision's inline threads
+and attempts to resolve them. Resolution is not guaranteed: a Reporter-role
+token (see Step 1) may not have permission to resolve a thread, in which
+case the reply is still posted but the thread stays open.
 
 > **Editing the prompt:** the body is passed to the agent exactly as written.
 > It is *not* templated — `{{ mr.title }}` and friends would appear literally,
