@@ -38,7 +38,60 @@ review:
     - "**/*.lock"
     - "**/dist/**"
     - "**/*.generated.*"
+  # A diff larger than this is no longer refused — it is split into batches and
+  # reviewed one batch per agent session, then the findings are merged into one
+  # comment. Phase 1 declined outright, because a partial review presented as a
+  # complete one is worse than an honest refusal; chunking is what makes the
+  # refusal unnecessary. The note says how many batches were used, so a reader
+  # can see it happened rather than having to guess.
   max_diff_bytes: 400000
+
+  # GitLab flags generated files itself. Excluding on its flag beats guessing at
+  # them with exclude_paths patterns, and a generated diff is noise the reviewer
+  # should not spend a batch on.
+  exclude_generated: true
+
+  # Batch size and the hard ceiling on batch count. Both optional:
+  # max_chunk_bytes defaults to max_diff_bytes, so an existing config keeps
+  # behaving exactly as it did. Past max_chunks the review is refused rather
+  # than truncated — a review that silently skipped half the diff is the one
+  # outcome worse than no review.
+  # max_chunk_bytes: 400000
+  max_chunks: 20
+
+  # A separate budget for the FULL FILE CONTENTS fetched into files/ for
+  # context. Separate from the batch budget on purpose: batching bounds the
+  # diff, and nothing would otherwise bound the context, so a one-line change to
+  # a very large file would copy that whole file into the sandbox the agent
+  # container shares. Running out is NOT a refusal — the diff is still reviewed
+  # in full, and MR.md names the files whose contents were left out.
+  # max_context_bytes: 400000
+
+  # THE SELF-CRITIQUE PASS. After the review, a SECOND, independent agent
+  # session re-reads the findings cold and drops the weak ones before anything
+  # is posted. It is a fresh session on purpose: a model asked to disown
+  # findings still sitting in its own context window defends them; one meeting
+  # them for the first time can actually disagree.
+  #
+  # On by default, and worth leaving on. Reviewer noise is the only failure mode
+  # in this design that costs anything — every other failure is loud, and noise
+  # is quiet, spending trust one weak comment at a time. If the critique cannot
+  # run, the review is still published and the comment says the critique did not
+  # run; a flaky second pass must never become zero reviews.
+  critique: true
+  critique_timeout_ms: 600000
+
+  # OPTIONAL wider context: a read-only copy of the repository at this merge
+  # request's exact commit, so the reviewer can see the caller of a changed
+  # function, the test that was not touched, or the interface a new class claims
+  # to implement.
+  #
+  # Off by default because it costs a network fetch and a second copy of the
+  # working tree on every review. Turning it on does NOT give the agent a
+  # repository: trusted code does the clone and deletes .git before the agent
+  # session starts, so the sandbox still contains no git history and the
+  # reviewing agent still has nothing to push with.
+  checkout: false
 
   # DIAGNOSTIC, off by default. When a review fails, leave its sandbox on disk
   # under review-workspaces/ instead of deleting it, so you can see exactly what
@@ -127,6 +180,19 @@ Do these five things, in order:
 
 Step 4 before step 5. Saying you are done does not save the file.
 
+## One thing this file does not control
+
+Everything above is yours to edit and reaches the reviewing agent verbatim. The
+review system APPENDS a short block of session-specific instructions after it,
+and that block wins where the two disagree. It is how one session is told it is
+reviewing batch 2 of 4 and must write `FINDINGS.1.json` instead, and how the
+agent is told `repo/` exists when the optional checkout is on.
+
+So do not try to describe batching or filenames here — you cannot know them when
+you write this file, and the appended block already says them correctly. Write
+this file as though it were a single, whole review, which is what it is in the
+ordinary case.
+
 ## The shape of FINDINGS.json
 
 ```json
@@ -153,7 +219,14 @@ than being partly published. So:
   key, not `""` — for `line` when the finding is not about one specific line,
   and for `suggestion` when you have no concrete fix to offer.
 - **Do not add keys** that are not in the example. An unknown key is rejected.
-- `severity` is exactly one of `blocking`, `concern`, `nit`.
+- `severity` is exactly one of `blocking`, `concern`, `nit`:
+  - `blocking` — a correctness, security or data-loss problem. This should not
+    merge as it stands.
+  - `concern` — worth a human's judgement before merging. You believe it is a
+    problem; you may be missing context that makes it fine.
+  - `nit` — optional polish. Take it or leave it, and never a reason to hold up
+    a merge. (The published comment heads this section "Minor", since "nit" is
+    reviewer jargon; the value you write here stays `nit`.)
 - `lineType` is exactly one of `added`, `removed`, `context`, and must match what
   the line actually is in the diff: `added` for a `+` line, `removed` for a `-`
   line, `context` for an unchanged one.

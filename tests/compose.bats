@@ -372,3 +372,81 @@ EOF
   grep -q '^    image: reg\.test\.local/opencode:latest$' "$out"
   grep -q '^    image: reg\.test\.local/opencode-symphony:latest$' "$out"
 }
+
+# --- 10. SYMPHONY_REVIEW_CHECKOUT: the optional shallow checkout switch -----
+# Slice D (design report §9, phase 2): an behaviour switch, not a credential,
+# passed through to symphony-review's own environment: block, defaulting OFF.
+# These pin down the three things the brief calls out explicitly, each
+# re-verified together with the pre-existing token-isolation invariants so a
+# future edit near this switch cannot quietly regress either one.
+
+@test "SYMPHONY_REVIEW_CHECKOUT defaults to OFF (\"0\") in the resolved symphony-review config when unset" {
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=REVIEW-TOKEN-DISTINCT-VALUE-6\n' > "$SANDBOX/projects/rev-only/review.env"
+  resolve_or_fail rev-only
+  local rev_block; rev_block="$(service_block "$COMPOSE_CONFIG_OUT" symphony-review)"
+
+  [[ "$rev_block" == *'SYMPHONY_REVIEW_CHECKOUT: "0"'* ]] \
+    || { echo "expected SYMPHONY_REVIEW_CHECKOUT: \"0\" in the resolved symphony-review block, got:" >&2; printf '%s\n' "$rev_block" >&2; false; }
+}
+
+@test "SYMPHONY_REVIEW_CHECKOUT=1 in review.env turns it on in symphony-review and reaches NEITHER agent service" {
+  mkdir -p "$SANDBOX/projects/rev-only/config" "$SANDBOX/projects/rev-only/workspaces"
+  cat > "$SANDBOX/projects/rev-only/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=REVIEW-TOKEN-DISTINCT-VALUE-7\nSYMPHONY_REVIEW_CHECKOUT=1\n' > "$SANDBOX/projects/rev-only/review.env"
+  resolve_or_fail rev-only
+  local out="$COMPOSE_CONFIG_OUT"
+  local rev_block opencode_block opencode_review_block
+  rev_block="$(service_block "$out" symphony-review)"
+  opencode_block="$(service_block "$out" opencode)"
+  opencode_review_block="$(service_block "$out" opencode-review)"
+
+  [[ "$rev_block" == *'SYMPHONY_REVIEW_CHECKOUT: "1"'* ]]
+  [[ "$opencode_block" != *'SYMPHONY_REVIEW_CHECKOUT'* ]]
+  [[ "$opencode_review_block" != *'SYMPHONY_REVIEW_CHECKOUT'* ]]
+}
+
+@test "SYMPHONY_REVIEW_GITLAB_TOKEN reaches no env_file: layer reachable by opencode-review, even with SYMPHONY_REVIEW_CHECKOUT=1 alongside it" {
+  # docker compose config MERGES env_file: contents into each service's
+  # printed environment — so "the token's value is absent from the resolved
+  # opencode-review block" and "no env_file: layer reachable by
+  # opencode-review carries it" are the same assertion made against the same
+  # ground truth. Exercised with the new switch turned on specifically to
+  # prove adding SYMPHONY_REVIEW_CHECKOUT next to the token in the same
+  # environment: block did not loosen this.
+  make_project my-svc gitlab
+  printf 'SYMPHONY_GITLAB_TOKEN=REPORTER-TOKEN-DISTINCT-VALUE-99999\n' > "$SANDBOX/projects/my-svc/symphony.env"
+  printf 'GITLAB_PAT=AGENT-PAT-DISTINCT-VALUE-77777\n' > "$SANDBOX/projects/my-svc/.env"
+  cat > "$SANDBOX/projects/my-svc/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=REVIEW-TOKEN-DISTINCT-VALUE-8\nSYMPHONY_REVIEW_CHECKOUT=1\n' > "$SANDBOX/projects/my-svc/review.env"
+
+  resolve_or_fail my-svc
+  local opencode_review_block
+  opencode_review_block="$(service_block "$COMPOSE_CONFIG_OUT" opencode-review)"
+  [[ "$opencode_review_block" != *"REVIEW-TOKEN-DISTINCT-VALUE-8"* ]] \
+    || { echo "INVARIANT BROKEN: SYMPHONY_REVIEW_GITLAB_TOKEN reached opencode-review's resolved config once SYMPHONY_REVIEW_CHECKOUT was turned on" >&2; false; }
+}
+
+@test "still no build: key anywhere in docker/*.yml after the SYMPHONY_REVIEW_CHECKOUT change" {
+  run bash -c "grep -rnE '^[[:space:]]*build:' '$SANDBOX/docker'/*.yml"
+  [ "$status" -eq 1 ]
+}

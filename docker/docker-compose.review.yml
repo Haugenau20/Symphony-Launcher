@@ -131,6 +131,24 @@ services:
       # reasoning as SYMPHONY_OPENCODE_URL in docker-compose.symphony.yml.
       SYMPHONY_OPENCODE_URL: http://opencode-review:${OPENCODE_INTERNAL_PORT:-4096}
       SYMPHONY_LOG_LEVEL: ${SYMPHONY_LOG_LEVEL:-info}
+      # The optional shallow checkout at the pinned head SHA (design report
+      # §9, phase 2 slice D — src/review/checkout.ts in symphony-queue). A
+      # BEHAVIOUR SWITCH, not a credential: unlike SYMPHONY_REVIEW_GITLAB_TOKEN
+      # below, its value is not secret and there is no invariant broken by it
+      # reaching a container's resolved config in plain sight — it is read
+      # here purely because this is the ONE service whose environment: block
+      # is guaranteed to reach the review controller regardless of which
+      # per-project env layer set it (root .env, symphony.env, or
+      # review.env), the identical reasoning `SYMPHONY_LOG_LEVEL` above
+      # already follows.
+      #
+      # Defaults OFF: a shallow clone per review is real wall-clock (a
+      # network fetch, however shallow) and real disk (a second copy of the
+      # repository per in-flight review, on top of the diff already written)
+      # — see projects/_example/review.env.example for the honest cost this
+      # default is paying to avoid by default. `1` turns it on for this
+      # project; anything else (including unset) leaves it off.
+      SYMPHONY_REVIEW_CHECKOUT: ${SYMPHONY_REVIEW_CHECKOUT:-0}
       #
       # THE THIRD TOKEN, and the whole point of this file. Same mechanism,
       # same reasoning, as SYMPHONY_GITLAB_TOKEN in docker-compose.symphony.yml:
