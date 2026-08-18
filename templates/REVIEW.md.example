@@ -34,10 +34,20 @@ review:
   skip_forks: true
   rereview_on_new_head: true
   max_attempts: 3
+  # Files matched here are not fetched, not reviewed, and not named in the
+  # published comment — only counted. You wrote the rule, so reciting the
+  # matches back on every revision is noise: a __pycache__ rule that catches
+  # the same five .pyc files forever adds five lines that never change. Files
+  # skipped for reasons you did NOT choose (binary, generated, too large for
+  # GitLab to render) are still named, because those are worth a second look.
   exclude_paths:
     - "**/*.lock"
     - "**/dist/**"
     - "**/*.generated.*"
+    # Compiled Python. Binary, regenerated constantly, and committed by
+    # accident more often than on purpose.
+    - "**/__pycache__/**"
+    - "**/*.pyc"
   # A diff larger than this is no longer refused — it is split into batches and
   # reviewed one batch per agent session, then the findings are merged into one
   # comment. Phase 1 declined outright, because a partial review presented as a
