@@ -204,10 +204,19 @@ review_dispatched         {"project":"my-group/my-test-repo","mrIid":42,...}
 review_published          {"noteId":"..."}
 ```
 
-Then open the merge request. You should see one comment: a summary line, then
-findings grouped under **Blocking** / **Concern** / **Nit**, each naming a file
-and line. If the reviewer found nothing, it still posts and says so — silence
-always means the reviewer did not run, never that it approved.
+Then open the merge request. With `inline_comments: true` (the default), most
+findings appear as comments on their own lines in the **Changes** tab, and the
+summary comment holds whatever could not be placed there — so a short summary
+comment usually means placement worked, not that little was found. It says how
+many went inline.
+
+Set `inline_comments: false` and everything arrives in that one comment
+instead: a summary line, then findings grouped under **Blocking** /
+**Concern** / **Nit**, each naming a file and line.
+
+Either way the summary comment is posted, every time. If the reviewer found
+nothing it still posts and says so — silence always means the reviewer did not
+run, never that it approved.
 
 ### Watching the state directly
 
