@@ -574,3 +574,20 @@ EOF
   run grep -E '^SYMPHONY_[A-Z_]*=' "$REPO_ROOT/projects/_example/.env.example"
   [ "$status" -eq 1 ]
 }
+
+@test "templates/REVIEW.md.example: inline_comments and checkout each ship at their OWN intended value" {
+  # Not a blanket "everything is false" rule — checkout stays off (it costs a
+  # network fetch and a second working tree per review) while inline_comments
+  # ships on (see the flag's own comment block for why this deployment's
+  # default differs from a cautious default-off).
+  run grep -E '^  inline_comments: true$' "$REPO_ROOT/templates/REVIEW.md.example"
+  [ "$status" -eq 0 ]
+  run grep -E '^  checkout: false$' "$REPO_ROOT/templates/REVIEW.md.example"
+  [ "$status" -eq 0 ]
+}
+
+@test "docs/REVIEW_QUICKSTART.md documents review.inline_comments by name" {
+  run grep -c 'inline_comments' "$REPO_ROOT/docs/REVIEW_QUICKSTART.md"
+  [ "$status" -eq 0 ]
+  [ "$output" -gt 0 ]
+}
