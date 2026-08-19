@@ -25,6 +25,18 @@ review:
   # group created to hold exactly the projects being reviewed.
   # group_id: my-group/reviewed
 
+  # Which endpoint supplies a merge request's changed files. Leave on `auto`
+  # unless your instance misbehaves: it tries the modern /diffs endpoint and
+  # falls back to /changes for the life of the process on a 404 or 5xx.
+  #
+  # Set `changes` if your GitLab answers 500 on /diffs — some 17.x versions do,
+  # for some merge requests. `auto` still produces a correct review there, but
+  # it spends one doomed request per process and logs a warning on every restart
+  # that reads like a fault and is not one. `diffs` forces the modern endpoint
+  # and surfaces its failure instead of falling back, which is how you find out
+  # whether an upgrade fixed it.
+  diff_endpoint: auto
+
   poll_interval_ms: 60000
   include_drafts: false
   # Fork merge requests are always skipped, unconditionally — see the
