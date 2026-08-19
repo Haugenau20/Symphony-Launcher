@@ -74,8 +74,14 @@ services:
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
-      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid,.local"
-      no_proxy: "localhost,127.0.0.1,::1,opencode,squid,.local"
+      # `.local` is deliberately NOT in this list. A self-hosted GitLab on a
+      # `.local` hostname is extremely common, and squid is the ONLY route off
+      # this host — so excluding `.local` from the proxy does not send that
+      # traffic "direct", it sends it nowhere. The failure is a DNS error in a
+      # container whose config all looks correct, with nothing in squid's log
+      # because the request never reached squid.
+      NO_PROXY: "localhost,127.0.0.1,::1,opencode,squid"
+      no_proxy: "localhost,127.0.0.1,::1,opencode,squid"
       # The in-container listen port, kept decoupled from any host port.
       OPENCODE_INTERNAL_PORT: "${OPENCODE_INTERNAL_PORT:-4096}"
       PROJECT_SLUG: ${PROJECT_SLUG:-default}

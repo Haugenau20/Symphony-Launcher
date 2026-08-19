@@ -9,6 +9,21 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 `.env.example`) always pulls the newest upload; pin an explicit tag in
 `.env` for a reproducible unattended run.
 
+## [Unreleased]
+
+### Review: inline comments
+
+`review.inline_comments` (shipped default: `true`). A finding that can be
+tied to a specific line is now posted as a comment on that line in the
+merge request's Changes view, instead of only appearing in the summary
+comment. A finding whose line cannot be confirmed against the diff still
+falls back to the summary comment rather than being guessed at, and the
+summary comment is still posted on every review — with or without inline
+findings, and even with none at all. Re-reviewing a new commit replies to
+the previous revision's inline threads and attempts to resolve them; a
+Reporter-role token may not be permitted to resolve one, in which case the
+reply stands on its own and the thread stays open.
+
 ## [0.1.0] — 2026-08-10
 
 Initial release. A launcher for **Symphony**: an unattended orchestrator
