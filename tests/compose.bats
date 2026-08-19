@@ -450,3 +450,14 @@ EOF
   run bash -c "grep -rnE '^[[:space:]]*build:' '$SANDBOX/docker'/*.yml"
   [ "$status" -eq 1 ]
 }
+
+@test "no NO_PROXY list excludes .local — squid is the only route out, so excluding a host sends it nowhere" {
+  # A self-hosted GitLab on a .local hostname is common, and every container
+  # here reaches the outside world ONLY through squid. Putting .local in
+  # NO_PROXY therefore does not send that traffic "direct" — it sends it
+  # nowhere, and the symptom is a DNS failure in a container whose config all
+  # reads correctly, with nothing in squid's log because squid was never asked.
+  run bash -c "grep -rn 'no_proxy\|NO_PROXY' '$SANDBOX/docker'/*.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *".local"* ]]
+}
