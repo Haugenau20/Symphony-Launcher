@@ -23,7 +23,7 @@ yourself (`brew install bats-core`, `apt install bats`, …) skips the fetch.
 | --- | --- | --- |
 | `unit_helpers.bats` | sources `./symphony`, calls helpers directly | `validate_project_name`, the `project_*_dir`/`project_*_file`/`project_*_container_name` path helpers (incl. the config-dir/symphony.env containment), `symphony_tracker_kind`, `symphony_wf_scalar`, `env_file_get`, the allowlist normalization trio (`symphony_norm_dest`/`symphony_path_of`/`symphony_covered_by`), `symphony_allowlist_agreement`, `symphony_http_proxy`, `symphony_preflight` (missing-WORKFLOW.md case), `viewer_port_for`/`port_pair_free` |
 | `cli.bats` | runs a sandboxed copy of `./symphony` as a subprocess | verb dispatch and arg errors, `init` (scaffolding + idempotency), `check` (missing WORKFLOW.md, file_queue pass, gitlab token requirement, token-reuse warning, leaked `SYMPHONY_*` key warning, the allowlist cross-check), `up` (preflight-abort-before-any-docker-call, the exact service list pulled/started, `--publish`), `logs` (not-running vs. tailing), `status` (per-state counts, the missing-queue-dirs regression, the gitlab tracker board), `stop`/`down`, `add` (file_queue queuing, gitlab refusal), `projects` (excludes `_example`), and a static assertion that neither example env file carries a `SYMPHONY_*` key |
-| `compose.bats` | resolves the sandboxed stack with the REAL `docker compose config` | the token-isolation invariant (`SYMPHONY_GITLAB_TOKEN` reaches only the symphony service, exactly once), `/workspace` is always a volume never a bind, `/workspaces` binds to the same host path in both opencode and symphony, `/config` is read-only in symphony, port publishing (none by default, exactly two loopback-bound ports with `--publish`), both internal networks are actually `internal: true`, the stack is pull-only with every image resolving off `IMAGE_REGISTRY`, and egress (`HTTP_PROXY` in the symphony service) is genuinely derived from `tracker.kind` |
+| `compose.bats` | resolves the sandboxed stack with the REAL `docker compose config` | the token-isolation invariant (`SYMPHONY_GITLAB_TOKEN` reaches only the symphony service, exactly once), `/workspace` is always a volume never a bind, `/workspaces` binds to the same host path in both opencode and symphony, `/config` is read-only in symphony, port publishing (none by default, exactly two loopback-bound ports with `--publish`), the internal network is actually `internal: true` and no agent service (`opencode`, `opencode-review`, `symphony`, `symphony-review`) ever sits on a non-internal one, the stack is pull-only with every image resolving off `IMAGE_REGISTRY`, and egress (`HTTP_PROXY` in the symphony service) is genuinely derived from `tracker.kind` |
 
 **`compose.bats` never boots the stack.** The images this launcher pulls live
 in a private registry (`IMAGE_REGISTRY` in `.env`), and the `-symphony` image
@@ -59,7 +59,8 @@ the rest of the suite still runs on a box with no docker on `PATH`.
   `./symphony` as a subprocess. `resolve_compose_config`/`resolve_or_fail` run
   the exact same `symphony_derive_settings` every real verb runs, then the
   real `docker compose ... config`, for `compose.bats`. `service_block`,
-  `network_block` and `mount_source` pick apart the resulting YAML.
+  `network_block`, `service_networks` and `mount_source` pick apart the
+  resulting YAML.
 - **source-guard** — `./symphony` runs `main` only when executed directly
   (`[ "${BASH_SOURCE[0]}" = "${0}" ]`), so `unit_helpers.bats` can `source` it
   for free with no side effects.
@@ -77,4 +78,5 @@ the rest of the suite still runs on a box with no docker on `PATH`.
 - A question about what the compose files actually resolve to? Add to
   `compose.bats`: `make_project`, `resolve_or_fail NAME [--publish]`, then
   assert against `$COMPOSE_CONFIG_OUT` (real resolved YAML) with
-  `service_block`/`network_block`/`mount_source` or a direct `grep`.
+  `service_block`/`network_block`/`service_networks`/`mount_source` or a
+  direct `grep`.

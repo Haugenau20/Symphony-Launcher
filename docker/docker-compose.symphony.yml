@@ -69,8 +69,8 @@ services:
       #
       # Egress for the GitLab tracker only, and not a value you set by hand:
       # lib/symphony.sh derives it from tracker.kind in WORKFLOW.md. It had
-      # exactly one possible value (squid is the only way out — both networks
-      # below are internal: true) and one other state, "you forgot it, run
+      # exactly one possible value (squid is the only way out — oc_proxy
+      # below is internal: true) and one other state, "you forgot it, run
       # aborted", which is not a setting worth having. With
       # tracker.kind: file_queue it stays empty and this container has no route
       # off-host at all.
@@ -114,10 +114,10 @@ services:
       # agent env file is readable from in here.
       - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
     networks:
-      # oc_internal reaches opencode. oc_proxy is only useful once
-      # SYMPHONY_HTTP_PROXY points at squid, which the launcher does for the
-      # gitlab tracker; on the file queue this container has no egress
-      # regardless, because both networks are internal: true.
-      - oc_internal
+      # oc_proxy reaches opencode directly (both are on it) and is also what
+      # makes SYMPHONY_HTTP_PROXY reach squid, once the launcher sets it for
+      # the gitlab tracker; on the file queue this container still has no
+      # egress, because oc_proxy is internal: true regardless of what
+      # HTTP_PROXY happens to hold.
       - oc_proxy
     restart: unless-stopped

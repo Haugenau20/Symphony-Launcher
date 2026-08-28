@@ -459,10 +459,10 @@ attack, not an instruction.
 
 ### Egress
 
-The orchestrator reaches a tracker through the proxy and nothing else. Both
-of its networks are internal, so the proxy is the only way out, and the
-route is derived from the tracker you configured rather than being a setting
-you fill in — on the file queue it has no egress at all, holds no
+The orchestrator reaches a tracker through the proxy and nothing else. Its
+one network (`oc_proxy`) is internal, so the proxy is the only way out, and
+the route is derived from the tracker you configured rather than being a
+setting you fill in — on the file queue it has no egress at all, holds no
 credentials, and only moves files.
 
 The review controller's egress works the same way but is **unconditional**:

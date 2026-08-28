@@ -119,7 +119,6 @@ services:
       - oc_state:/home/dev/.local/share/opencode
       - oc_cfg:/home/dev/.config/opencode
     networks:
-      - oc_internal
       - oc_proxy
     cap_add:
       - CHOWN
@@ -142,20 +141,45 @@ services:
       - ${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z
     networks:
       - oc_proxy
-      - oc_egress
+      - oc_external
     stop_grace_period: 1s
 
 networks:
-  # oc_internal and oc_proxy are internal: true, so squid on oc_egress is the
-  # only route off-host for anything on them. That is what makes "no proxy
-  # variable" equal "no egress" for the orchestrator under the file queue.
-  oc_internal:
-    driver: bridge
-    internal: true
+  # oc_proxy is internal: true, so squid — the only service with a leg on
+  # BOTH oc_proxy and oc_external — is the only route off-host for anything
+  # on it. That is what makes "no proxy variable" equal "no egress" for the
+  # orchestrator under the file queue.
+  #
+  # THE INVARIANT THIS STACK DEPENDS ON: no agent container (opencode,
+  # opencode-review, symphony, symphony-review — see docker-compose.symphony.yml
+  # and docker-compose.review.yml) may ever join oc_external, or any other
+  # non-internal network. squid is the sole exception, by design; adding a
+  # second one silently opens a route off-host that nothing in this stack's
+  # egress model (README's "The security model" > "Egress") accounts for.
+  #
+  # This used to be three networks: oc_internal + oc_proxy on the agent side,
+  # oc_egress here. oc_internal's membership was always a strict SUBSET of
+  # oc_proxy's — every service on oc_internal was already on oc_proxy, which
+  # additionally carried squid — so it granted no reachability oc_proxy did
+  # not already grant; it was semantic separation, not enforcement, and it
+  # still cost a bridge network (and the subnet dockerd carves for one) per
+  # stack. Collapsed to a single internal network for that reason. See
+  # oc_external below for the matching collapse on the egress side.
   oc_proxy:
     driver: bridge
     internal: true
-  oc_egress:
+  # NOT internal — the only network in this stack that can reach off-host,
+  # and squid is the only service that ever sits on it (see the invariant
+  # above). Also the route the --publish overlay's `publish` service uses
+  # for its loopback-bound debug ports (docker-compose.publish.yml), merged
+  # in from what used to be a separate oc_publish network: squid and publish
+  # already reach each other over oc_proxy, so a shared external bridge
+  # creates no adjacency that did not already exist, and it draws only one
+  # subnet from dockerd's address-pool budget instead of two — see
+  # docker-compose.publish.yml's own header for why that budget is worth
+  # husbanding. Real off-host reachability on this network is still gated by
+  # squid's allowlist, not by anything at the network layer.
+  oc_external:
     driver: bridge
 
 volumes:

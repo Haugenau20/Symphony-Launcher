@@ -167,6 +167,24 @@ network_block() {
   ' "$file"
 }
 
+# service_networks BLOCK_TEXT — given a service block (as text, e.g. from
+# service_block), print the name of every network the service is a member
+# of, one per line. `docker compose config` renders a service's own
+# `networks:` key as a nested map (`      <net>: null`, 6-space indent, one
+# level deeper than the service's other 4-space keys) — the same list ->
+# map rendering `mount_source` above already relies on for volumes. Anchored
+# on the exact 4-space `    networks:` line so a same-named top-level
+# section elsewhere in the file (there is none inside one service block, but
+# nothing here assumes that) can never be mistaken for it.
+service_networks() {
+  local block="$1"
+  printf '%s\n' "$block" | awk '
+    /^    networks:$/ { grab=1; next }
+    grab && /^      [A-Za-z0-9_.-]+:/ { n=$0; sub(/^      /, "", n); sub(/:.*/, "", n); print n; next }
+    grab { grab=0 }
+  '
+}
+
 # mount_source BLOCK_TEXT TARGET — given a service block (as text, e.g. from
 # service_block) and a mount target path (e.g. "/workspaces"), print the
 # `source:` value of the (bind or volume) mount whose `target:` matches

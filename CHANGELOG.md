@@ -11,6 +11,23 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 
 ## [Unreleased]
 
+### Fewer docker networks per stack
+
+Collapsed each project's docker networks from three or four down to two:
+`oc_internal` is gone (its membership was always a strict subset of
+`oc_proxy`'s, so it enforced nothing `oc_proxy` did not already enforce),
+and `oc_egress`/`oc_publish` are now one network, `oc_external`. Every
+bridge network draws a subnet from dockerd's address-pool budget
+(`172.16.0.0/12` and `192.168.0.0/16` carved into predefined pools by
+default, with no `default-address-pools` override), and a host running
+several of these stacks alongside other docker tooling can exhaust that
+budget, failing a stack boot with "all predefined address pools have been
+fully subnetted." Halving the per-stack draw is the point. The invariant
+that made this safe to do — no agent container (`opencode`,
+`opencode-review`, `symphony`, `symphony-review`) may ever sit on a
+non-internal network, so `squid` stays the only route off-host — is now
+also an explicit `compose.bats` test, not just a comment.
+
 ### Review: inline comments
 
 `review.inline_comments` (shipped default: `true`). A finding that can be
