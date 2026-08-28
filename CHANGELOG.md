@@ -11,6 +11,23 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 
 ## [Unreleased]
 
+### Fix: `up --publish` could silently bind an unprobed port on exhaustion
+
+`find_free_port` scanned its range by testing `port_pair_free` only as the
+loop condition, so exhausting the whole range fell out of the loop with the
+scan variable sitting on the exclusive upper bound — and printed that value
+as if it were confirmed free. `resolve_project_port` handed it straight to
+`OPENCODE_PORT`, so a genuinely full range failed later, opaquely, as a
+`docker compose up` bind error with nothing pointing back at "the port range
+was exhausted." `find_free_port` now probes inside the loop and returns
+non-zero with no output on exhaustion; `resolve_project_port` propagates
+that instead of substituting a value; `up --publish`, the only caller, now
+dies with a message naming the exhausted range. The scan itself also
+widened, from the old hard-coded `4097-4196` to
+`OPENCODE_PORT_SCAN_START`..`OPENCODE_PORT_SCAN_LIMIT` (4097-9999) — still
+capped at 4 digits on purpose: `viewer_port_for` prepends a literal `1` to
+the base port, and a 5-digit base would derive an unbindable 6-digit one.
+
 ### Fewer docker networks per stack
 
 Collapsed each project's docker networks from three or four down to two:
