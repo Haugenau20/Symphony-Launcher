@@ -14,7 +14,8 @@
 # merge-request-watching reviewer is a sibling of this file, not a rewrite of
 # the base"). Both promises are honoured here: the base stack is untouched,
 # and this file only ADDS two services, reusing the base's squid and internal
-# networks exactly as docker-compose.symphony.yml already does for symphony.
+# network (oc_proxy) exactly as docker-compose.symphony.yml already does for
+# symphony.
 #
 # WHY A SEPARATE opencode-review SERVICE, RATHER THAN REUSING opencode:
 # one opencode container cannot hold two credential sets. The base opencode
@@ -107,7 +108,6 @@ services:
       - oc_review_state:/home/dev/.local/share/opencode
       - oc_review_cfg:/home/dev/.config/opencode
     networks:
-      - oc_internal
       - oc_proxy
     cap_add:
       - CHOWN
@@ -204,11 +204,8 @@ services:
       # running both pipelines shares one read-only mount for both files.
       - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
     networks:
-      # oc_internal reaches opencode-review. oc_proxy is what makes
-      # SYMPHONY_HTTP_PROXY (squid) actually reachable — see the base file's
-      # header on why both are internal: true and squid is the only route
-      # off-host.
-      - oc_internal
+      # Reaches opencode-review, and squid for SYMPHONY_HTTP_PROXY.
+      # Internal-only — see the base file's networks: block.
       - oc_proxy
     restart: unless-stopped
 

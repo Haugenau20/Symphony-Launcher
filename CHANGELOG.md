@@ -9,7 +9,44 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 `.env.example`) always pulls the newest upload; pin an explicit tag in
 `.env` for a reproducible unattended run.
 
-## [Unreleased]
+## [0.2.0] — 2026-08-28
+
+The network change below alters the compose topology, so a running
+stack recreates its containers on the next `up`.
+
+### Fix: `up --publish` could silently bind an unprobed port on exhaustion
+
+`find_free_port` scanned its range by testing `port_pair_free` only as the
+loop condition, so exhausting the whole range fell out of the loop with the
+scan variable sitting on the exclusive upper bound — and printed that value
+as if it were confirmed free. `resolve_project_port` handed it straight to
+`OPENCODE_PORT`, so a genuinely full range failed later, opaquely, as a
+`docker compose up` bind error with nothing pointing back at "the port range
+was exhausted." `find_free_port` now probes inside the loop and returns
+non-zero with no output on exhaustion; `resolve_project_port` propagates
+that instead of substituting a value; `up --publish`, the only caller, now
+dies with a message naming the exhausted range. The scan itself also
+widened, from the old hard-coded `4097-4196` to
+`OPENCODE_PORT_SCAN_START`..`OPENCODE_PORT_SCAN_LIMIT` (4097-9999) — still
+capped at 4 digits on purpose: `viewer_port_for` prepends a literal `1` to
+the base port, and a 5-digit base would derive an unbindable 6-digit one.
+
+### Fewer docker networks per stack
+
+Collapsed each project's docker networks from three or four down to two:
+`oc_internal` is gone (its membership was always a strict subset of
+`oc_proxy`'s, so it enforced nothing `oc_proxy` did not already enforce),
+and `oc_egress`/`oc_publish` are now one network, `oc_external`. Every
+bridge network draws a subnet from dockerd's address-pool budget
+(`172.16.0.0/12` and `192.168.0.0/16` carved into predefined pools by
+default, with no `default-address-pools` override), and a host running
+several of these stacks alongside other docker tooling can exhaust that
+budget, failing a stack boot with "all predefined address pools have been
+fully subnetted." Halving the per-stack draw is the point. The invariant
+that made this safe to do — no agent container (`opencode`,
+`opencode-review`, `symphony`, `symphony-review`) may ever sit on a
+non-internal network, so `squid` stays the only route off-host — is now
+also an explicit `compose.bats` test, not just a comment.
 
 ### Review: inline comments
 
@@ -58,21 +95,3 @@ No web UI is exposed by default. `docker-compose.publish.yml` is a third,
 opt-in file added only by `up --publish`, binding loopback-only debug
 ports — an unattended stack has no web UI worth exposing otherwise.
 
-### Verification status
-
-Honest, not reassuring:
-
-- **This stack has never been booted.** Every check so far is at
-  `docker compose config` level — resolved environment, resolved volumes,
-  resolved credential placement (the Reporter token appears exactly once in
-  the whole stack, under the `symphony` service, never under `opencode`).
-  Real checks, but none of them is a boot. The `-symphony` image may not
-  even be published in your registry yet — a pull failure on it is an
-  **expected state**, not a bug here.
-- **The GitLab integration has never touched a live API.** The tracker and
-  the API write tools live inside the images this launcher runs, not in this
-  repository, and this test suite does not exercise them — it verifies
-  configuration resolution. They have been tested only against mocks.
-  Assume the first real run against a real GitLab project finds bugs; see
-  [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md), which is written
-  with that assumption built in.

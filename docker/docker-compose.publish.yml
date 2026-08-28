@@ -18,7 +18,8 @@ services:
       # that is why these two live here and not in the base file. Binding
       # 0.0.0.0 inside the container is still safe: the container itself is
       # only reachable via the loopback-bound ports: mapping below, on
-      # oc_proxy/oc_publish, both of which stay off the host network directly.
+      # oc_proxy/oc_external, neither of which is attached to the host
+      # network directly.
       PTY_WEB_HOSTNAME: "0.0.0.0"
       PTY_WEB_PORT: "1${OPENCODE_PORT:-4096}"
 
@@ -56,15 +57,10 @@ services:
       - "127.0.0.1:${OPENCODE_PORT:-4096}:${OPENCODE_INTERNAL_PORT:-4096}"
       - "127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"
     networks:
+      # oc_external is defined in the base file (same as oc_proxy). Sharing it
+      # with squid adds no adjacency — they already meet on oc_proxy — and this
+      # service only ever serves the loopback-bound ports: above.
       - oc_proxy
-      - oc_publish
+      - oc_external
     restart: unless-stopped
     stop_grace_period: 1s
-
-networks:
-  # NOT internal — this is deliberately the one network in the whole stack
-  # that reaches the host, and only the host: it carries no egress path
-  # outward, just the loopback-bound ports: mapping above back to whoever
-  # started the stack.
-  oc_publish:
-    driver: bridge

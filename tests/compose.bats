@@ -242,17 +242,85 @@ EOF
 }
 
 # --- 6. internal networks -----------------------------------------------------
+# There are two networks in the resolved stack: oc_proxy (internal: true —
+# every agent-facing container lives here) and oc_external (NOT internal —
+# squid's actual route off-host, and the --publish overlay's loopback-bound
+# debug legs; see docker-compose.yml's own `networks:` header). A prior
+# revision of this stack also had oc_internal, whose membership was always a
+# strict subset of oc_proxy's, so it enforced nothing beyond what oc_proxy
+# already enforced while still drawing its own subnet from dockerd's
+# address-pool budget — removed for that reason. The test below asserts the
+# real invariant the two-network shape depends on, not just "the network
+# named oc_proxy has the internal flag": no agent service can be moved onto
+# oc_external (or any future non-internal network) without this failing,
+# regardless of what that network ends up being named.
 
-@test "both oc_internal and oc_proxy are internal: true" {
+@test "oc_proxy is internal: true, and oc_internal no longer exists" {
   make_project my-svc file_queue
   resolve_or_fail my-svc
   local out="$COMPOSE_CONFIG_OUT"
 
-  local oc_internal_block oc_proxy_block
-  oc_internal_block="$(network_block "$out" oc_internal)"
-  oc_proxy_block="$(network_block "$out" oc_proxy)"
-  [[ "$oc_internal_block" == *"internal: true"* ]]
+  local oc_proxy_block; oc_proxy_block="$(network_block "$out" oc_proxy)"
   [[ "$oc_proxy_block" == *"internal: true"* ]]
+
+  local oc_internal_block; oc_internal_block="$(network_block "$out" oc_internal)"
+  [ -z "$oc_internal_block" ] \
+    || { echo "oc_internal still exists in the resolved stack — it was collapsed into oc_proxy (see docker-compose.yml's networks: header)" >&2; false; }
+}
+
+@test "THE OFF-HOST INVARIANT: no agent service (opencode, opencode-review, symphony, symphony-review) sits on any non-internal network" {
+  # squid is the ONLY service allowed a leg on oc_external — that pairing
+  # (one leg on the internal bus, one leg on the external one) is what makes
+  # it the sole route off-host. Every agent container must therefore be
+  # reachable ONLY through internal networks. This is exercised with a
+  # gitlab + review + --publish project so all four agent services actually
+  # appear in the resolved stack at once, alongside squid and publish
+  # (which legitimately DO carry oc_external, and are deliberately excluded
+  # from the services checked below).
+  make_project my-svc gitlab
+  cat > "$SANDBOX/projects/my-svc/config/REVIEW.md" <<'EOF'
+---
+review:
+  base_url: https://gitlab.example.com
+---
+body
+EOF
+  printf 'SYMPHONY_REVIEW_GITLAB_TOKEN=REVIEW-TOKEN-DISTINCT-VALUE-9\n' > "$SANDBOX/projects/my-svc/review.env"
+
+  # symphony_derive_settings adds docker-compose.review.yml purely on
+  # SYMPHONY_REVIEW_GITLAB_TOKEN's presence — see lib/symphony.sh — so no
+  # --with-review flag is needed here; resolve_compose_config only ever
+  # understands --publish anyway (see common.bash).
+  resolve_or_fail my-svc --publish
+  local out="$COMPOSE_CONFIG_OUT"
+
+  # Build the set of network names that are actually internal: true, rather
+  # than hard-coding "oc_proxy" — a future rename must not silently defeat
+  # this test.
+  local internal_nets; internal_nets="$(awk '
+    /^  [A-Za-z0-9_.-]+:$/ { net=$0; sub(/^  /, "", net); sub(/:$/, "", net); next }
+    /^    internal: true$/ { print net }
+  ' "$out")"
+  [ -n "$internal_nets" ] || { echo "no internal: true network found at all in the resolved stack" >&2; false; }
+
+  local svc net found
+  for svc in opencode opencode-review symphony symphony-review; do
+    local block; block="$(service_block "$out" "$svc")"
+    [ -n "$block" ] || { echo "expected the $svc service to be present in this resolved stack (gitlab + --with-review + --publish) and it was not" >&2; false; }
+    while IFS= read -r net; do
+      [ -n "$net" ] || continue
+      found=0
+      local want
+      for want in $internal_nets; do
+        [ "$net" = "$want" ] && { found=1; break; }
+      done
+      if [ "$found" -ne 1 ]; then
+        echo "INVARIANT BROKEN: $svc service sits on '$net', which is NOT an internal: true network — an agent" >&2
+        echo "container must never have a route off-host; only squid may." >&2
+        false
+      fi
+    done <<< "$(service_networks "$block")"
+  done
 }
 
 # --- 7. pull-only, and every image resolves off IMAGE_REGISTRY --------------

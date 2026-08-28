@@ -119,7 +119,6 @@ services:
       - oc_state:/home/dev/.local/share/opencode
       - oc_cfg:/home/dev/.config/opencode
     networks:
-      - oc_internal
       - oc_proxy
     cap_add:
       - CHOWN
@@ -142,20 +141,23 @@ services:
       - ${EXTRA_ALLOWLIST_PATH:-./extra-allowlist.d}:/etc/squid/extra-allowlist.d:ro,z
     networks:
       - oc_proxy
-      - oc_egress
+      - oc_external
     stop_grace_period: 1s
 
 networks:
-  # oc_internal and oc_proxy are internal: true, so squid on oc_egress is the
-  # only route off-host for anything on them. That is what makes "no proxy
-  # variable" equal "no egress" for the orchestrator under the file queue.
-  oc_internal:
-    driver: bridge
-    internal: true
+  # Two networks: agents get the internal-only one, squid the external one.
+  # That is the floor this model permits, and each extra costs a subnet from
+  # dockerd's address pools (~32 on a stock daemon, shared host-wide).
+  #
+  # INVARIANT: no agent container (opencode, opencode-review, symphony,
+  # symphony-review) on a non-internal network — squid is the only route
+  # off-host, which is what makes "no proxy variable" mean "no egress" under
+  # the file queue. tests/compose.bats asserts it.
   oc_proxy:
     driver: bridge
     internal: true
-  oc_egress:
+  # Reaches off-host: squid's egress, and the --publish overlay's ports.
+  oc_external:
     driver: bridge
 
 volumes:

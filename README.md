@@ -27,7 +27,6 @@ later.
 - [The security model](#the-security-model)
 - [What `check` catches](#what-check-catches)
 - [Operational traps](#operational-traps)
-- [What is not verified](#what-is-not-verified)
 
 ## How it works
 
@@ -459,10 +458,10 @@ attack, not an instruction.
 
 ### Egress
 
-The orchestrator reaches a tracker through the proxy and nothing else. Both
-of its networks are internal, so the proxy is the only way out, and the
-route is derived from the tracker you configured rather than being a setting
-you fill in — on the file queue it has no egress at all, holds no
+The orchestrator reaches a tracker through the proxy and nothing else. Its
+one network (`oc_proxy`) is internal, so the proxy is the only way out, and
+the route is derived from the tracker you configured rather than being a
+setting you fill in — on the file queue it has no egress at all, holds no
 credentials, and only moves files.
 
 The review controller's egress works the same way but is **unconditional**:
@@ -545,19 +544,6 @@ Worth knowing *before* the first unattended run:
 - **Nothing watches merge-request state.** A merged merge request does not
   move its item to `done`, and does not reclaim its workspace. `review →
   done` is a human decision by construction — that is the design, not a gap.
-
-## What is not verified
-
-Stated plainly rather than reassuringly:
-
-- **This stack has not been booted.** Everything here is verified at the
-  level of resolved compose configuration — the resolved environment, the
-  resolved mounts, and where each credential ends up. Those are real checks
-  and the test suite runs them against the real resolver, but none of them
-  is a boot.
-- **The GitLab integration has not run against a live API.** The tracker and
-  the API write tools are tested against mocks. Assume the first real run
-  finds bugs, and point it at a project you would not mind losing.
 
 ## More docs
 

@@ -1,9 +1,8 @@
 # Troubleshooting
 
-Failures ordered by how likely you are to hit them on a fresh deployment.
-None of the integrations here have run against real infrastructure yet (see
-the README's "What is not verified"), so expect the first real run to find
-something on this list.
+Failures ordered by how likely you are to hit them on a fresh deployment —
+most are configuration or credential problems that surface on the first run
+against a new project.
 
 For every entry: what to look at, and whether `symphony check <name>` or
 `symphony config <name>` would have caught it beforehand.

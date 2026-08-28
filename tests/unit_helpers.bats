@@ -412,3 +412,53 @@ setup() {
   run port_pair_free 4096
   [ "$status" -ne 0 ]
 }
+
+# --- find_free_port ------------------------------------------------------------
+# Regression coverage for the bug this scan used to have: the loop's own
+# condition (`... && ! port_pair_free "$p"`) was the only probe, so an
+# exhausted range fell out of the loop with p == limit and printed LIMIT
+# ITSELF — a port never actually checked. resolve_project_port then handed
+# that straight to compose as though it were confirmed free.
+
+@test "find_free_port: returns the first free port at or after START" {
+  port_pair_free() { [ "$1" -ge 4099 ]; }
+  run find_free_port 4097 4196
+  [ "$status" -eq 0 ]
+  [ "$output" = "4099" ]
+}
+
+@test "find_free_port: exhaustion returns non-zero and echoes NOTHING" {
+  port_pair_free() { return 1; }   # nothing in range is ever free
+  run find_free_port 4097 4100
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "find_free_port: on exhaustion, output is never the un-probed LIMIT itself" {
+  # The exact shape of the old bug: assert directly on the value that used
+  # to leak out, not just "some non-empty output" (which the test above
+  # already covers).
+  port_pair_free() { return 1; }
+  run find_free_port 4097 4100
+  [ "$output" != "4100" ]
+}
+
+@test "find_free_port: scans past the old hard-coded 4196 ceiling" {
+  # Everything below 4200 is taken; only find_free_port actually being given
+  # (and using) a wider range than the old literal 4097-4196 call finds it.
+  port_pair_free() { [ "$1" -ge 4200 ]; }
+  run find_free_port "$OPENCODE_PORT_SCAN_START" "$OPENCODE_PORT_SCAN_LIMIT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "4200" ]
+}
+
+@test "OPENCODE_PORT_SCAN_LIMIT keeps the base port 4 digits — viewer_port_for's derivation depends on it" {
+  # viewer_port_for prepends a literal '1' to the base
+  # (docker-compose.publish.yml's \`1\${OPENCODE_PORT}\` mapping does the same
+  # thing at compose-resolution time). A 5-digit base would derive an
+  # unbindable 6-digit "port", so the scan's own ceiling must never reach one.
+  local max_base=$((OPENCODE_PORT_SCAN_LIMIT - 1))
+  [ "$max_base" -le 9999 ]
+  local viewer; viewer="$(viewer_port_for "$max_base")"
+  [ "$viewer" -le 65535 ]
+}

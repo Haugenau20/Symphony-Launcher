@@ -105,16 +105,43 @@ port_pair_free() {
   ! port_in_use "$base" && ! port_in_use "$(viewer_port_for "$base")"
 }
 
+# OPENCODE_PORT_SCAN_START/_LIMIT — bounds for resolve_project_port's
+# fresh-assignment scan (find_free_port). START begins just past the default
+# base port (4096 itself is tried directly first — see resolve_project_port
+# below, before find_free_port is ever called). LIMIT is exclusive and
+# pinned at 10000, NOT arbitrary headroom: the base port feeds
+# viewer_port_for, which prepends a literal '1' (4096 -> 14096), and
+# docker-compose.publish.yml's `1${OPENCODE_PORT}` ports: mapping only
+# derives a valid port when the base stays 4 digits. A 5-digit base
+# (10000+) would derive an unbindable 6-digit "port" (100000+), so this
+# range must never reach one. Named constants rather than the literals
+# scattered inline, so the 4-digit ceiling has exactly one place to hold.
+OPENCODE_PORT_SCAN_START=4097
+OPENCODE_PORT_SCAN_LIMIT=10000
+
 # find_free_port START [LIMIT] — echo the first free port >= START, scanning
-# up to LIMIT (exclusive; default START+100). "Free" is the viewer-aware
-# sense (port_pair_free), so a candidate whose viewer port is taken is
-# skipped too, not just the candidate itself.
+# up to LIMIT (exclusive; default START+100), and return 0. "Free" is the
+# viewer-aware sense (port_pair_free), so a candidate whose viewer port is
+# taken is skipped too, not just the candidate itself. Returns 1 and echoes
+# NOTHING if every candidate in [START, LIMIT) is taken — a caller must
+# check the exit status before trusting any output, never assume a printed
+# value means success.
+#
+# Probes INSIDE the loop and returns the moment a free port is found, rather
+# than looping on port_pair_free as the loop CONDITION and printing
+# whatever `p` happened to land on afterward: that shape let the loop exit
+# on the bound with p == limit and print LIMIT ITSELF — a port that was
+# never actually probed — on total exhaustion, instead of failing loudly.
 find_free_port() {
   local p="$1" limit="${2:-$(( $1 + 100 ))}"
-  while [ "$p" -lt "$limit" ] && ! port_pair_free "$p"; do
+  while [ "$p" -lt "$limit" ]; do
+    if port_pair_free "$p"; then
+      printf '%s' "$p"
+      return 0
+    fi
     p=$((p + 1))
   done
-  printf '%s' "$p"
+  return 1
 }
 
 # recorded_port NAME — echo the OPENCODE_PORT last written to
@@ -143,9 +170,10 @@ publish_container_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$(project_publish_container_name "$name")"
 }
 
-# resolve_project_port NAME — echo the port NAME's stack should publish on.
-# Only the `up --publish` path calls this — port publishing is opt-in, and
-# every other verb never binds a host port at all. The sticky rule, in order:
+# resolve_project_port NAME — echo the port NAME's stack should publish on,
+# and return 0. Only the `up --publish` path calls this — port publishing is
+# opt-in, and every other verb never binds a host port at all. The sticky
+# rule, in order:
 #   a. if NAME's own publisher container is currently running, reuse the
 #      port recorded in projects/<name>/.env (the running stack IS the
 #      truth — never treat it as "busy" and bounce it to another port). If
@@ -154,13 +182,19 @@ publish_container_running() {
 #   b. else if a recorded port exists and is currently free, reuse it
 #      (sticky across down/up cycles, even after 4096 frees up again).
 #   c. else 4096 if free (base AND its viewer port 14096 — see
-#      port_pair_free), otherwise the first free port in 4097-4196
-#      (find_free_port).
+#      port_pair_free), otherwise the first free port in
+#      OPENCODE_PORT_SCAN_START..OPENCODE_PORT_SCAN_LIMIT (find_free_port).
 #
 # Only the FRESH-assignment branch (c) gets the viewer-port coupling — (a)/(b)
 # are sticky reuse of a port this project itself already recorded/is running
 # on, and must keep behaving exactly as before (never bounced to a different
 # port just because a viewer port looks busy).
+#
+# FAILS (echoes nothing, returns 1) when branch (c) exhausts the whole scan
+# range — every caller MUST check the exit status. Silently substituting
+# OPENCODE_PORT_SCAN_LIMIT itself here (find_free_port's own former bug —
+# see its header) would hand compose a port never actually confirmed free,
+# which fails opaquely at bind time with no hint the range ran out.
 resolve_project_port() {
   local name="$1" recorded running=0
   recorded="$(recorded_port "$name")"
@@ -180,5 +214,5 @@ resolve_project_port() {
     printf '%s' 4096
     return 0
   fi
-  find_free_port 4097 4196
+  find_free_port "$OPENCODE_PORT_SCAN_START" "$OPENCODE_PORT_SCAN_LIMIT"
 }

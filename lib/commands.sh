@@ -278,7 +278,11 @@ cmd_up() {
 
   if [ "$publish" -eq 1 ]; then
     local port
-    port="$(resolve_project_port "$name")"
+    # resolve_project_port fails (echoes nothing) if the whole scan range —
+    # 4096 plus OPENCODE_PORT_SCAN_START..OPENCODE_PORT_SCAN_LIMIT — is
+    # taken; naming the range here is the point, since a bare compose bind
+    # failure downstream would give no hint that this was why.
+    port="$(resolve_project_port "$name")" || die "no free port for --publish: every port from 4096 through $((OPENCODE_PORT_SCAN_LIMIT - 1)) (and each one's viewer twin) is already in use. Free one — or stop whatever else is running on this host and holding the range — then retry."
     export OPENCODE_PORT="$port"
     info "publishing on port $port (viewer $(viewer_port_for "$port"))"
     COMPOSE+=(-f "$__SYM_DIR/docker/docker-compose.publish.yml")
