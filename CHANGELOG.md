@@ -9,7 +9,10 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 `.env.example`) always pulls the newest upload; pin an explicit tag in
 `.env` for a reproducible unattended run.
 
-## [Unreleased]
+## [0.2.0] — 2026-08-28
+
+The network change below alters the compose topology, so a running
+stack recreates its containers on the next `up`.
 
 ### Fix: `up --publish` could silently bind an unprobed port on exhaustion
 
@@ -92,21 +95,3 @@ No web UI is exposed by default. `docker-compose.publish.yml` is a third,
 opt-in file added only by `up --publish`, binding loopback-only debug
 ports — an unattended stack has no web UI worth exposing otherwise.
 
-### Verification status
-
-Honest, not reassuring:
-
-- **This stack has never been booted.** Every check so far is at
-  `docker compose config` level — resolved environment, resolved volumes,
-  resolved credential placement (the Reporter token appears exactly once in
-  the whole stack, under the `symphony` service, never under `opencode`).
-  Real checks, but none of them is a boot. The `-symphony` image may not
-  even be published in your registry yet — a pull failure on it is an
-  **expected state**, not a bug here.
-- **The GitLab integration has never touched a live API.** The tracker and
-  the API write tools live inside the images this launcher runs, not in this
-  repository, and this test suite does not exercise them — it verifies
-  configuration resolution. They have been tested only against mocks.
-  Assume the first real run against a real GitLab project finds bugs; see
-  [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md), which is written
-  with that assumption built in.
