@@ -114,10 +114,7 @@ services:
       # agent env file is readable from in here.
       - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
     networks:
-      # oc_proxy reaches opencode directly (both are on it) and is also what
-      # makes SYMPHONY_HTTP_PROXY reach squid, once the launcher sets it for
-      # the gitlab tracker; on the file queue this container still has no
-      # egress, because oc_proxy is internal: true regardless of what
-      # HTTP_PROXY happens to hold.
+      # Reaches opencode, and squid for SYMPHONY_HTTP_PROXY. Internal-only,
+      # so on the file queue there is no egress whatever HTTP_PROXY holds.
       - oc_proxy
     restart: unless-stopped

@@ -57,17 +57,9 @@ services:
       - "127.0.0.1:${OPENCODE_PORT:-4096}:${OPENCODE_INTERNAL_PORT:-4096}"
       - "127.0.0.1:1${OPENCODE_PORT:-4096}:1${OPENCODE_PORT:-4096}"
     networks:
-      # oc_proxy reaches opencode directly. oc_external is defined in the
-      # base file, not redeclared here — same pattern as oc_proxy above,
-      # which this overlay has never redeclared either — and is shared with
-      # squid (docker-compose.yml), not exclusive to this service the way
-      # the old, separate oc_publish network was. That sharing adds no new
-      # adjacency (squid and publish already reach each other over oc_proxy)
-      # and this container still has nothing to send outward on it: its only
-      # traffic is the two loopback-bound legs in ports: above, which is host
-      # reachability, not off-host egress — squid's allowlist is what gates
-      # the latter, for whatever is actually on oc_external trying to use it
-      # that way.
+      # oc_external is defined in the base file (same as oc_proxy). Sharing it
+      # with squid adds no adjacency — they already meet on oc_proxy — and this
+      # service only ever serves the loopback-bound ports: above.
       - oc_proxy
       - oc_external
     restart: unless-stopped

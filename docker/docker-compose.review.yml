@@ -204,10 +204,8 @@ services:
       # running both pipelines shares one read-only mount for both files.
       - ${SYMPHONY_CONFIG_PATH:-./projects/default/config}:/config:ro,z
     networks:
-      # oc_proxy reaches opencode-review directly (both are on it) and is
-      # what makes SYMPHONY_HTTP_PROXY (squid) actually reachable — see the
-      # base file's header on why it is internal: true and squid is the only
-      # route off-host.
+      # Reaches opencode-review, and squid for SYMPHONY_HTTP_PROXY.
+      # Internal-only — see the base file's networks: block.
       - oc_proxy
     restart: unless-stopped
 
