@@ -95,11 +95,12 @@ services:
       # reachable from this container.
       OPENCODE_EXTRA_ALLOWED_DIRS: /review-workspaces/**
     volumes:
-      # Per-MR disposable review checkouts — material the trusted
-      # symphony-review controller writes, the agent only reads. Shared with
-      # symphony-review below so the path the agent is told about is the path
-      # it actually sees, exactly like /workspaces is shared between opencode
-      # and symphony in the base stack.
+      # Per-session disposable review workspaces. The trusted controller
+      # prepares one base then creates an isolated copy per reviewer/batch and
+      # for the critic; each agent reads material and writes FINDINGS.json only
+      # inside its own copy. Shared with symphony-review below so the path the
+      # agent is told about is the path it actually sees, exactly like
+      # /workspaces is shared between opencode and symphony in the base stack.
       - ${SYMPHONY_REVIEW_WORKSPACES_PATH:-./projects/default/review-workspaces}:/review-workspaces:z
       # opencode's project root. An EMPTY named volume, same reasoning as the
       # base opencode service: nothing anyone needs is written here, because
@@ -148,11 +149,11 @@ services:
       # review.env), the identical reasoning `SYMPHONY_LOG_LEVEL` above
       # already follows.
       #
-      # Defaults OFF: a shallow clone per review is real wall-clock (a
-      # network fetch, however shallow) and real disk (a second copy of the
-      # repository per in-flight review, on top of the diff already written)
-      # — see projects/_example/review.env.example for the honest cost this
-      # default is paying to avoid by default. `1` turns it on for this
+      # Defaults OFF: a shallow clone per review is real wall-clock, and the
+      # prepared checkout is then copied into every eligible reviewer/batch
+      # workspace plus the critic workspace. See
+      # projects/_example/review.env.example for the honest resource cost this
+      # default avoids. `1` turns it on for this
       # project; anything else (including unset) leaves it off.
       SYMPHONY_REVIEW_CHECKOUT: ${SYMPHONY_REVIEW_CHECKOUT:-0}
       #

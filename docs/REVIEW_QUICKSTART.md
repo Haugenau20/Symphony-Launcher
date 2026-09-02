@@ -113,10 +113,39 @@ review:
     - "**/*.lock"
     - "**/dist/**"
   max_diff_bytes: 400000
+
+  # Two active MRs, with at most four reviewer/critic sessions process-wide.
+  max_concurrent_reviews: 2
+  max_parallel_review_agents: 4
+
+  reviewers:
+    - id: general
+      primary: true
+      instructions: Review broadly for correctness and maintainability.
+    - id: security
+      max_chunks: 2
+      instructions: Focus on trust boundaries, authorization, and unsafe input.
+    - id: reliability
+      max_chunks: 2
+      instructions: Focus on concurrency, retries, recovery, and data loss.
 ```
 
 Once you trust it, swap `projects:` for `group_id: my-group` — one API call per
 poll no matter how many repositories the group holds.
+
+### Parallel reviewer profiles
+
+Exactly one reviewer must set `primary: true`; it always runs and cannot set
+`max_chunks`. Supplemental reviewers are ordinary team-defined review lenses.
+A supplemental `max_chunks: 2` means it runs only when the final material plan
+has at most two batches, preventing reviewer × batch fan-out from growing
+without a ceiling.
+
+Every eligible reviewer/batch pair is an isolated session. The controller runs
+them through one fair, process-wide `max_parallel_review_agents` pool, merges
+results deterministically, removes exact duplicates, and then runs the existing
+cold critic once for semantic validation and near-duplicate removal. Omitting
+`reviewers` preserves the previous single broad reviewer.
 
 ### `review.inline_comments`
 
@@ -132,10 +161,10 @@ diff always falls back to the summary comment rather than being guessed at,
 and the summary comment is posted on every review regardless — even one
 with no findings at all.
 
-Re-reviewing a new commit replies to the previous revision's inline threads
-and attempts to resolve them. Resolution is not guaranteed: a Reporter-role
-token (see Step 1) may not have permission to resolve a thread, in which
-case the reply is still posted but the thread stays open.
+After a new final review is published, the controller attempts to resolve its
+older inline threads directly. Resolution is not guaranteed: a Reporter-role
+token (see Step 1) may not have permission, in which case the old thread is
+left untouched. No supersession reply or fallback comment is posted.
 
 > **Editing the prompt:** the body is passed to the agent exactly as written.
 > It is *not* templated — `{{ mr.title }}` and friends would appear literally,
@@ -199,12 +228,19 @@ In the logs you are looking for this sequence:
 
 ```
 review_mode_starting
-review_config_loaded      {"projectCount":1,"pollIntervalMs":60000}
+review_config_loaded      {"projectCount":1,"reviewerIds":["general","security","reliability"],"maxParallelReviewAgents":4,...}
 review_dispatched         {"project":"my-group/my-test-repo","mrIid":42,...}
+review_start_announced    {"noteId":"..."}
+review_worker_fanout_planned
 review_published          {"noteId":"..."}
 ```
 
-Then open the merge request. With `inline_comments: true` (the default), most
+Then open the merge request. A top-level `Symphony review started.` note is
+posted before any agent work begins. It is idempotent per head SHA, so retries
+do not add duplicates. If that note exists without a final review, the review
+is still running or failed after launch — it is no longer ambiguous silence.
+
+With `inline_comments: true` (the default), most
 findings appear as comments on their own lines in the **Changes** tab, and the
 summary comment holds whatever could not be placed there — so a short summary
 comment usually means placement worked, not that little was found. It says how
@@ -236,8 +272,10 @@ Each record is JSON with its state, attempt count and the published note id.
 ./symphony down my-review
 ```
 
-In-flight reviews are left claimed and re-run on the next start. Nothing was
-published for them, so a re-run costs only time.
+In-flight reviews are left claimed and re-run on the next start. Their
+idempotent `Symphony review started.` note may already exist, but no final
+review was published; the retry reuses the start marker rather than posting a
+duplicate.
 
 ---
 
