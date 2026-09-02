@@ -9,6 +9,29 @@ imply a new image, and vice versa. `IMAGE_TAG=latest` (the default in
 `.env.example`) always pulls the newest upload; pin an explicit tag in
 `.env` for a reproducible unattended run.
 
+## [Unreleased]
+
+### Review: parallel reviewer profiles and lifecycle notes
+
+Updated the shipped review configuration and operating docs for
+symphony-queue's parallel reviewer pipeline. `review.reviewers` now shows one
+unconditional primary plus team-defined supplemental lenses, and
+`review.max_parallel_review_agents` documents the fair process-wide ceiling
+shared by reviewer and critic sessions. Each reviewer/batch runs in an isolated
+workspace, writes its own `FINDINGS.json`, and contributes to one
+deterministically merged and de-duplicated final review.
+
+A per-head `Symphony review started.` note is now posted before agent work, so
+a launched review is visible even if a later error prevents the final comment.
+Prior-revision cleanup no longer posts `Superseded by ...` replies: it resolves
+older Symphony threads directly where permitted and otherwise leaves them
+untouched. Checkout documentation now accounts for one workspace copy per
+reviewer/batch and critic session.
+
+No compose topology or new environment variable is required. The existing
+read-only `REVIEW.md` mount and `/review-workspaces/**` agent allowance cover
+the new sessions.
+
 ## [0.2.0] — 2026-08-28
 
 The network change below alters the compose topology, so a running

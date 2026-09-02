@@ -46,6 +46,40 @@ review:
   skip_forks: true
   rereview_on_new_head: true
   max_attempts: 3
+
+  # REVIEW JOBS and AGENT SESSIONS have separate ceilings. The first limits
+  # how many merge requests the controller works on at once. The second is one
+  # process-wide pool shared by every reviewer and critic session across those
+  # merge requests. Work rotates fairly between merge requests, so one large
+  # fan-out cannot consume every newly freed slot.
+  max_concurrent_reviews: 2
+  max_parallel_review_agents: 4
+
+  # NAMED REVIEW LENSES. Every eligible reviewer runs independently over every
+  # material batch, then the controller merges and de-duplicates the findings
+  # before one cold critic pass. Exactly ONE reviewer must be primary. The
+  # primary is unconditional and therefore cannot set max_chunks; a
+  # supplemental reviewer with max_chunks is skipped when the final material
+  # plan has more batches than that ceiling.
+  #
+  # Add, remove or rewrite supplemental profiles to match the team. Their
+  # instructions are trusted config appended to the shared prompt below.
+  reviewers:
+    - id: general
+      primary: true
+      instructions: |
+        Review broadly for correctness, maintainability, and missing tests.
+
+    - id: security
+      max_chunks: 2
+      instructions: |
+        Focus on trust boundaries, authorization, secrets, and unsafe input.
+
+    - id: reliability
+      max_chunks: 2
+      instructions: |
+        Focus on concurrency, retries, recovery, and data loss.
+
   # Files matched here are not fetched, not reviewed, and not named in the
   # published comment — only counted. You wrote the rule, so reciting the
   # matches back on every revision is noise: a __pycache__ rule that catches
@@ -114,11 +148,11 @@ review:
   # finding went inline and even when there are no findings at all, so
   # silence still means the reviewer did not run.
   #
-  # Re-reviewing a new commit replies to the previous revision's threads and
-  # resolves them where the token is permitted to. A Reporter-role token may
-  # not be allowed to resolve a thread; when it is not, the reply stands on
-  # its own and the thread stays open — this does not retry or escalate, it
-  # is simply what the token could do.
+  # After the new final review is safely published, older Symphony-owned
+  # threads are resolved directly where the token is permitted to do so. A
+  # Reporter-role token may not be allowed to resolve a thread; when GitLab
+  # refuses, the old thread is left untouched. No supersession reply or other
+  # user-visible fallback comment is posted.
   #
   # On by default in this template: this deployment is not live anywhere and
   # watches only one test repository, so shipping it off would just mean
@@ -130,11 +164,14 @@ review:
   # function, the test that was not touched, or the interface a new class claims
   # to implement.
   #
-  # Off by default because it costs a network fetch and a second copy of the
-  # working tree on every review. Turning it on does NOT give the agent a
-  # repository: trusted code does the clone and deletes .git before the agent
-  # session starts, so the sandbox still contains no git history and the
-  # reviewing agent still has nothing to push with.
+  # Off by default because it costs one network fetch plus a byte-for-byte
+  # workspace copy for every eligible reviewer/batch session and for the
+  # critic. max_parallel_review_agents bounds simultaneous copies, but a broad
+  # fan-out over a large checkout still consumes real disk and setup time.
+  # Turning it on does NOT give an agent a repository: trusted code deletes
+  # .git before any session starts, so the sandbox has no git history and the
+  # reviewing agent has nothing to push with. A tracked symbolic link makes
+  # checkout context unavailable and the review continues from diff/files.
   checkout: false
 
   # DIAGNOSTIC, off by default. When a review fails, leave its sandbox on disk
@@ -226,16 +263,18 @@ Step 4 before step 5. Saying you are done does not save the file.
 
 ## One thing this file does not control
 
-Everything above is yours to edit and reaches the reviewing agent verbatim. The
-review system APPENDS a short block of session-specific instructions after it,
-and that block wins where the two disagree. It is how one session is told it is
-reviewing batch 2 of 4 and must write `FINDINGS.1.json` instead, and how the
-agent is told `repo/` exists when the optional checkout is on.
+Everything above is yours to edit and reaches every reviewing agent verbatim.
+The review system then APPENDS the selected reviewer's trusted `instructions`
+from the front matter and a short block of session-specific constraints. The
+appended block wins where the texts disagree: it identifies the reviewer and
+batch, limits the session to that batch, and says whether `repo/` exists.
 
-So do not try to describe batching or filenames here — you cannot know them when
-you write this file, and the appended block already says them correctly. Write
-this file as though it were a single, whole review, which is what it is in the
-ordinary case.
+Every isolated session writes the same `FINDINGS.json` name in its own private
+workspace; filenames no longer vary by batch. Do not try to duplicate batching
+or workspace details here — you cannot know them when you write this file, and
+the appended block already states them correctly. Write the shared prompt as a
+complete general review, then keep each lens's specialization in its reviewer
+`instructions`.
 
 ## The shape of FINDINGS.json
 
